@@ -1,4 +1,4 @@
-﻿// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+﻿// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 #include "VrmConvertRig.h"
 #include "VrmConvert.h"
@@ -17,54 +17,23 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Animation/MorphTarget.h"
 #include "Animation/NodeMappingContainer.h"
-#include "Animation/Rig.h"
 #include "Animation/Skeleton.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "UObject/UnrealType.h"
+#if UE_VERSION_OLDER_THAN(5,4,0)
+#include "Animation/Rig.h"
+#endif
 
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsEngine/PhysicsConstraintTemplate.h"
 
-#if	UE_VERSION_OLDER_THAN(5,0,0)
-
-#elif UE_VERSION_OLDER_THAN(5,2,0)
-
-#include "UObject/UnrealTypePrivate.h"
-#include "IKRigDefinition.h"
-#include "IKRigSolver.h"
-#include "Retargeter/IKRetargeter.h"
-#if WITH_EDITOR
-#include "RigEditor/IKRigController.h"
-#include "RetargetEditor/IKRetargeterController.h"
-#include "Solvers/IKRig_PBIKSolver.h"
-#endif
-
-#elif UE_VERSION_OLDER_THAN(5,3,0)
-
-#include "UObject/UnrealTypePrivate.h"
-#include "IKRigDefinition.h"
-#include "IKRigSolver.h"
-#include "Retargeter/IKRetargeter.h"
-#if WITH_EDITOR
-#include "RigEditor/IKRigController.h"
-#include "RetargetEditor/IKRetargeterController.h"
-#include "Solvers/IKRig_FBIKSolver.h"
-#endif
-
+#if	UE_VERSION_OLDER_THAN(5,5,0)
 #else
-
-#include "UObject/UnrealTypePrivate.h"
-#include "Rig/IKRigDefinition.h"
-#include "Rig/Solvers/IKRigSolver.h"
-#include "Retargeter/IKRetargeter.h"
-#if WITH_EDITOR
-#include "RigEditor/IKRigController.h"
-#include "RetargetEditor/IKRetargeterController.h"
-#include "Rig/Solvers/IKRig_FBIKSolver.h"
+#include "PhysicsEngine/SkeletalBodySetup.h"
 #endif
 
-#endif
 
+#include "VrmRigHeader.h"
 
 
 #if WITH_EDITOR
@@ -152,13 +121,12 @@ bool VRMConverter::ConvertRig(UVrmAssetListObject *vrmAssetList) {
 		}
 	}
 
-
-#if	UE_VERSION_OLDER_THAN(4,20,0)
-#else
-
-#if WITH_EDITOR
 	auto* k = VRMGetSkeleton(vrmAssetList->SkeletalMesh);
 
+#if	UE_VERSION_OLDER_THAN(4,20,0)
+#elif UE_VERSION_OLDER_THAN(5,4,0)
+
+#if WITH_EDITOR
 	UNodeMappingContainer* mc = nullptr;
 
 #if	UE_VERSION_OLDER_THAN(5,0,0)
@@ -176,7 +144,6 @@ bool VRMConverter::ConvertRig(UVrmAssetListObject *vrmAssetList) {
 	mc->AddDefaultMapping();
 #endif
 
-	FString PelvisBoneName;
 	{
 		const VRM::VRMMetadata *meta = reinterpret_cast<VRM::VRMMetadata*>(aiData->mVRMMeta);
 
@@ -213,11 +180,6 @@ bool VRMConverter::ConvertRig(UVrmAssetListObject *vrmAssetList) {
 					break;
 				}
 
-				if (PelvisBoneName.Len() == 0) {
-					if (ue4.Compare(TEXT("Pelvis"), ESearchCase::IgnoreCase) == 0) {
-						PelvisBoneName = target;
-					}
-				}
 				func(ue4, target);
 			}
 			{
@@ -623,7 +585,43 @@ bool VRMConverter::ConvertRig(UVrmAssetListObject *vrmAssetList) {
 		}// map end
 	}
 
-	{
+	//mc->AddMapping
+	if (mc) {
+		mc->PostEditChange();
+		vrmAssetList->HumanoidRig = mc;
+	}
+#endif // editor
+#endif //420
+
+	if (VRMConverter::Options::Get().IsVRMAModel()) {
+		// for expression curve
+		for (int i = 0; i < k->GetReferenceSkeleton().GetRawBoneNum(); ++i) {
+			k->SetBoneTranslationRetargetingMode(i, EBoneTranslationRetargetingMode::Animation);
+		}
+
+		if (vrmAssetList && vrmAssetList->VrmMetaObject) {
+			for (auto& t : vrmAssetList->VrmMetaObject->humanoidBoneTable) {
+				auto i = k->GetReferenceSkeleton().FindBoneIndex(*t.Value);
+				if (i != INDEX_NONE) {
+					if (t.Key.Compare(TEXT("hips"), ESearchCase::IgnoreCase) == 0) {
+					} else {
+						k->SetBoneTranslationRetargetingMode(i, EBoneTranslationRetargetingMode::Skeleton);
+					}
+				}
+			}
+		}
+	}else{
+
+		FString PelvisBoneName;
+		if (vrmAssetList && vrmAssetList->VrmMetaObject) {
+			for (auto& t : vrmAssetList->VrmMetaObject->humanoidBoneTable) {
+				if (t.Key.Compare(TEXT("hips"), ESearchCase::IgnoreCase) == 0) {
+					PelvisBoneName = t.Value;
+					break;
+				}
+			}
+		}
+
 		int bone = -1;
 		for (int i = 0; i < k->GetReferenceSkeleton().GetRawBoneNum(); ++i) {
 			//const int32 BoneIndex = k->GetReferenceSkeleton().FindBoneIndex(InBoneName);
@@ -635,10 +633,11 @@ bool VRMConverter::ConvertRig(UVrmAssetListObject *vrmAssetList) {
 		}
 
 		bool first = true;
-		while(bone >= 0){
+		while (bone >= 0) {
 			if (first) {
 				k->SetBoneTranslationRetargetingMode(bone, EBoneTranslationRetargetingMode::AnimationScaled);
-			} else {
+			}
+			else {
 				k->SetBoneTranslationRetargetingMode(bone, EBoneTranslationRetargetingMode::Animation);
 			}
 			first = false;
@@ -656,7 +655,7 @@ bool VRMConverter::ConvertRig(UVrmAssetListObject *vrmAssetList) {
 				TEXT("ik_hand_r"),
 			};
 
-			for (auto &s : n) {
+			for (auto& s : n) {
 				int32 ind = k->GetReferenceSkeleton().FindBoneIndex(s);
 				if (ind < 0) continue;
 
@@ -670,19 +669,17 @@ bool VRMConverter::ConvertRig(UVrmAssetListObject *vrmAssetList) {
 				k->SetBoneTranslationRetargetingMode(ind, EBoneTranslationRetargetingMode::AnimationScaled, false);
 			}
 		}
-
+		if (VRMConverter::Options::Get().IsBVHModel()) {
+			// 0 == root by vrm4u dummy
+			// 1 == root by model
+			k->SetBoneTranslationRetargetingMode(0, EBoneTranslationRetargetingMode::Animation, false);
+			k->SetBoneTranslationRetargetingMode(1, EBoneTranslationRetargetingMode::Animation, false);
+		}
 		if (VRMConverter::Options::Get().IsVRMModel() == false) {
 			k->SetBoneTranslationRetargetingMode(0, EBoneTranslationRetargetingMode::Animation, false);
 		}
 
 	}
-	//mc->AddMapping
-	if (mc) {
-		mc->PostEditChange();
-		vrmAssetList->HumanoidRig = mc;
-	}
-#endif // editor
-#endif //420
 
 	// dummy Collision
 	if (vrmAssetList) {

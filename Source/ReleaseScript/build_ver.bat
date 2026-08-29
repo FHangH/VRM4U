@@ -11,8 +11,7 @@ set UPROJECT="C:\Users\ruyo\Documents\Unreal Projects\MyProjectBuildScript\MyPro
 set UNREALVERSIONSELECTOR="C:\Program Files (x86)\Epic Games\Launcher\Engine\Binaries\Win64\UnrealVersionSelector.exe"
 
 
-git reset HEAD ./
-git checkout ./
+git reset --hard HEAD
 
 powershell -ExecutionPolicy RemoteSigned .\version.ps1 \"%UE4VER%\"
 
@@ -40,6 +39,9 @@ del "..\..\..\VRM4U\Source\VRM4URender\Private\VRM4U_RenderSubsystem.cpp"
 del "..\..\..\VRM4U\Source\VRM4URender\Public\VRM4U_RenderSubsystem.h"
 )
 
+:: del for version <= 5.1
+del "..\..\..\VRM4U\Source\VRM4U\Private\RigUnit_VrmDynamicHierarchy.cpp"
+del "..\..\..\VRM4U\Source\VRM4U\Public\RigUnit_VrmDynamicHierarchy.h"
 
 set /a UEVersion=%UE4VER%
 for /f %%i in ('wsl echo "%UEVersion% * 100"') do set UEVersion100=%%i
@@ -55,25 +57,48 @@ if %isUE4% == FALSE (
 del "..\..\..\VRM4U\Content\Util\Actor\latest\WBP_MorphTarget.uasset"
 )
 
+if %isUE4% == TRUE (
+del "..\..\..\VRM4U\Source\VRM4U\Public\VrmAssetUserData.h"
+del "..\..\..\VRM4U\Source\VRM4U\Private\VrmAssetUserData.cpp"
+)
+
+
 set isRetargeterEnable=TRUE
 if %UEMajorVersion% == 4 (
     set isRetargeterEnable=FALSE
 )
 if %UE4VER% == 5.0 set isRetargeterEnable=FALSE
 if %UE4VER% == 5.1 set isRetargeterEnable=FALSE
-if %UE4VER% == 5.2 set isRetargeterEnable=FALSE
 
 if %isRetargeterEnable% == FALSE (
 del "..\..\..\VRM4U\Source\VRM4U\Private\VrmAnimInstanceRetargetFromMannequin.cpp"
 del "..\..\..\VRM4U\Source\VRM4U\Public\VrmAnimInstanceRetargetFromMannequin.h"
+del "..\..\..\VRM4U\Source\VRM4U\Private\VrmAnimInstanceTemplate.cpp"
+del "..\..\..\VRM4U\Source\VRM4U\Public\VrmAnimInstanceTemplate.h"
 )
 
 set isRenderModuleEnable=TRUE
 if %UE4VER% == 5.0 set isRenderModuleEnable=FALSE
+if %UE4VER% == 5.1 set isRenderModuleEnable=FALSE
 if %isUE4% == TRUE set isRenderModuleEnable=FALSE
 
 if %isRenderModuleEnable% == FALSE (
 del "..\..\..\VRM4U\Source\VRM4URender\VRM4URender.Build.cs"
+)
+
+set isAssetDefinition=TRUE
+if %UE4VER% == 5.1 set isAssetDefinition=FALSE
+if %UE4VER% == 5.0 set isAssetDefinition=FALSE
+if %isUE4% == TRUE set isAssetDefinition=FALSE
+if %isAssetDefinition% == FALSE (
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRM1License.h"
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRM1License.cpp"
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRMLicense.h"
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRMLicense.cpp"
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRMAssetList.h"
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRMAssetList.cpp"
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRMMeta.h"
+del "..\..\..\VRM4U\Source\VRM4UImporter\Private\AssetTypeActions\AssetDefinition_VRMMeta.cpp"
 )
 
 

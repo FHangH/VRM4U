@@ -1,4 +1,4 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 #pragma once
 
@@ -26,6 +26,7 @@ class VRM4U_API UVrmRuntimeSettings : public UObject
 		))
 	uint32 bDropVRMFileEnable:1;
 
+	/** Allow imports for every file format supported by Assimp, including PMX/MMD models. */
 	UPROPERTY(config, EditAnywhere, Category = Settings, meta = (
 		ConfigRestartRequired = true
 		))
@@ -35,10 +36,14 @@ class VRM4U_API UVrmRuntimeSettings : public UObject
 
 	/** Default material set for runtimeload */
 	UPROPERTY(config, EditAnywhere, Category = Settings, meta = (
-		AllowedClasses = "Object",
+		AllowedClasses = "/Script/CoreUObject.Object",
 		ExactClass = false
 		))
 	FSoftObjectPath AssetListObject;
+
+	/** Skip VRM validation check on import */
+	UPROPERTY(config, EditAnywhere, Category = Settings)
+	bool bSkipValidationOnImport = false;
 
 	/** priority<100 for VRM4U. Default plugins priority=100 */
 	UPROPERTY(config, EditAnywhere, Category = Settings, meta = (

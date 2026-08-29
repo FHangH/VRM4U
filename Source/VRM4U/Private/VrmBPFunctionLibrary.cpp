@@ -1,23 +1,27 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 #include "VrmBPFunctionLibrary.h"
 #include "Materials/MaterialInterface.h"
+#include "TextureResource.h"
 
 #include "Engine/Engine.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/SkeletalMesh.h"
-#include "Logging/MessageLog.h"
 #include "Engine/Canvas.h"
+#include "Engine/GameViewportClient.h"
+#include "Logging/MessageLog.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Animation/MorphTarget.h"
 #include "Misc/EngineVersionComparison.h"
+
 #if	UE_VERSION_OLDER_THAN(4,26,0)
 #include "AssetRegistryModule.h"
 #include "ARFilter.h"
 #else
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetData.h"
 #endif
 
 #include "Components/SkeletalMeshComponent.h"
@@ -28,27 +32,34 @@
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshModel.h"
 
-#if	UE_VERSION_OLDER_THAN(5,0,0)
+#include "VrmRigHeader.h"
 
-#elif UE_VERSION_OLDER_THAN(5,3,0)
-#include "IKRigDefinition.h"
-#include "IKRigSolver.h"
-#include "Retargeter/IKRetargeter.h"
-#if WITH_EDITOR
-#include "RigEditor/IKRigController.h"
-#include "RetargetEditor/IKRetargeterController.h"
-#endif
-
+#if	UE_VERSION_OLDER_THAN(5,2,0)
 #else
-#include "Rig/IKRigDefinition.h"
-#include "Rig/Solvers/IKRigSolver.h"
-#include "Retargeter/IKRetargeter.h"
-#if WITH_EDITOR
-#include "RigEditor/IKRigController.h"
-#include "RetargetEditor/IKRetargeterController.h"
+#include "RenderCounters.h"
 #endif
 
+#if	UE_VERSION_OLDER_THAN(5,5,0)
+#else
+#include "Kismet/KismetRenderingLibrary.h"
 #endif
+
+#if	UE_VERSION_OLDER_THAN(5,1,0)
+#else
+#if WITH_EDITOR && (PLATFORM_WINDOWS || PLATFORM_MAC)
+#define VRM4U_USE_MRQ 1
+#endif
+#endif
+
+#ifndef VRM4U_USE_MRQ
+#define VRM4U_USE_MRQ 0
+#endif
+
+
+#if VRM4U_USE_MRQ
+#include "MoviePipelineQueueSubsystem.h"
+#endif
+
 
 #include "Animation/AnimInstance.h"
 #include "VrmAnimInstanceCopy.h"
@@ -468,7 +479,7 @@ void UVrmBPFunctionLibrary::VRMDrawMaterialToRenderTarget(UObject* WorldContextO
 		}
 		);
 	}
-#else
+#elif UE_VERSION_OLDER_THAN(5,5,0)
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
 
 	if (!World)
@@ -543,6 +554,9 @@ void UVrmBPFunctionLibrary::VRMDrawMaterialToRenderTarget(UObject* WorldContextO
 		}
 		);
 	}
+#else
+	// 5.5.0
+	UKismetRenderingLibrary::DrawMaterialToRenderTarget(WorldContextObject, TextureRenderTarget, Material);
 #endif
 }
 
@@ -605,8 +619,12 @@ void UVrmBPFunctionLibrary::VRMChangeMaterialParent(UMaterialInstanceConstant *d
 		return;
 	}
 
-	dst->PreEditChange(NULL);
 	dst->SetParentEditorOnly(NewParent);
+
+	FMaterialUpdateContext UpdateContext(FMaterialUpdateContext::EOptions::Default, GMaxRHIShaderPlatform);
+	UpdateContext.AddMaterialInstance(dst);
+
+	dst->PreEditChange(NULL);
 	dst->PostEditChange();
 
 	// remove dynamic materials
@@ -614,11 +632,6 @@ void UVrmBPFunctionLibrary::VRMChangeMaterialParent(UMaterialInstanceConstant *d
 		if (Itr->Parent == dst) {
 			Itr->ConditionalBeginDestroy();
 		}
-	}
-
-	if (UseSkeletalMesh) {
-		UseSkeletalMesh->PreEditChange(NULL);
-		UseSkeletalMesh->PostEditChange();
 	}
 
 #else
@@ -956,6 +969,29 @@ void UVrmBPFunctionLibrary::VRMChangeMaterialStaticSwitch(UMaterialInstanceConst
 #endif
 }
 
+void UVrmBPFunctionLibrary::VRMGetMaterialStaticSwitch(UMaterialInstance* material, FName paramName, bool& bHasParam, bool& bEnable) {
+
+	bHasParam = false;
+	bEnable = false;
+	if (material == nullptr) return;
+
+#if WITH_EDITORONLY_DATA
+	if (GIsEditor == false) {
+		return;
+	}
+
+	bool Value = false;
+	FGuid ExpressionGuid;
+	if (material->GetStaticSwitchParameterValue(paramName, Value, ExpressionGuid))
+	{
+		bHasParam = true;
+		bEnable = Value;
+		return;
+	}
+	return;
+#endif
+}
+
 
 
 UObject* UVrmBPFunctionLibrary::VRMDuplicateAsset(UObject *src, FString name, UObject *thisOwner) {
@@ -998,6 +1034,11 @@ bool UVrmBPFunctionLibrary::VRMGetAssetsByPackageName(FName PackageName, TArray<
 	return AssetRegistry.GetAssetsByPackageName(PackageName, OutAssetData, bIncludeOnlyOnDiskAssets);
 }
 
+void UVrmBPFunctionLibrary::VRMSetIsDirty(UObject* obj) {
+	if (obj == nullptr) return;
+	obj->MarkPackageDirty();
+}
+
 UTextureRenderTarget2D* UVrmBPFunctionLibrary::VRMCreateRenderTarget2D(UObject* WorldContextObject, int32 Width, int32 Height, ETextureRenderTargetFormat Format, FLinearColor ClearColor)
 {
 	UWorld* World = GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull);
@@ -1036,6 +1077,43 @@ bool UVrmBPFunctionLibrary::VRMRenderingThreadEnable(bool bEnable) {
 #endif
 	return true;
 }
+
+int UVrmBPFunctionLibrary::VRMGetMeshSectionNum(const USkeletalMesh* mesh) {
+	if (mesh == nullptr) return 0;
+	return mesh->GetResourceForRendering()->LODRenderData[0].RenderSections.Num();
+
+/*
+	FSkeletalMeshRenderData* SkelMeshRenderData = GetResourceForRendering();
+	for (int32 LODIndex = MinLODIndex; LODIndex < SkelMeshRenderData->LODRenderData.Num(); LODIndex++)
+	{
+		FSkeletalMeshLODRenderData& LODRenderData = SkelMeshRenderData->LODRenderData[LODIndex];
+		const FSkeletalMeshLODInfo& Info = *(GetLODInfo(LODIndex));
+
+		// Check all render sections for the used material indices
+		for (int32 SectionIndex = 0; SectionIndex < LODRenderData.RenderSections.Num(); SectionIndex++)
+		{
+			FSkelMeshRenderSection& RenderSection = LODRenderData.RenderSections[SectionIndex];
+
+			// By default use the material index of the render section
+
+
+*/
+}
+
+bool UVrmBPFunctionLibrary::VRMRemoveMeshSection(USkeletalMesh* mesh, int LODIndex, int SectionIndex) {
+#if WITH_EDITOR
+	if (mesh == nullptr) return false;
+
+	if (mesh->GetResourceForRendering()->LODRenderData.IsValidIndex(LODIndex)) {
+
+		mesh->RemoveMeshSection(LODIndex, SectionIndex);
+		mesh->MarkPackageDirty();
+		return true;
+	}
+#endif
+	return false;
+}
+
 
 bool UVrmBPFunctionLibrary::VRMGetShadowEnable(const USkeletalMesh *mesh, int MaterialIndex) {
 
@@ -1283,9 +1361,9 @@ void UVrmBPFunctionLibrary::VRMGetPlayMode(bool &bPlay, bool &bSIE, bool &bEdito
 	}
 
 	if (GWorld) {
-		//if (GWorld->IsClient()) {
-			//bPlay = true;
-		//}
+		if (GWorld->HasBegunPlay() && GWorld->IsGameWorld()) {
+			bPlay = true;
+		}
 	}
 
 #else
@@ -1371,8 +1449,9 @@ namespace {
 		}
 		BOOL b = SetLayeredWindowAttributes(h, cr, a, dwFlags);
 		return b != 0;
-#endif
+#else
 		return false;
+#endif
 	}
 	void setDefaultWindow(const bool) {
 		setTransParent(false, FLinearColor(1, 1, 1, 1));
@@ -1408,10 +1487,17 @@ void UVrmBPFunctionLibrary::VRMExecuteConsoleCommand(UObject* WorldContextObject
 		return;
 	}
 
+#if	UE_VERSION_OLDER_THAN(5,5,0)
+
 	FOutputDevice& EffectiveOutputDevice = (FOutputDevice&)(*GLog);
 	FConsoleManager& ConsoleManager = (FConsoleManager&)IConsoleManager::Get();
+#else
 
+	FOutputDevice& EffectiveOutputDevice = (FOutputDevice&)(*GLog);
+	auto& ConsoleManager = IConsoleManager::Get();
+#endif
 	ConsoleManager.ProcessUserConsoleInput(&(cmd.GetCharArray()[0]), EffectiveOutputDevice, World);
+
 }
 
 
@@ -1670,8 +1756,11 @@ bool UVrmBPFunctionLibrary::VRMBakeAnim(const USkeletalMeshComponent* skc, const
 
 #if	UE_VERSION_OLDER_THAN(5,0,0)
 		ase->AddNewRawTrack(BoneName, &RawTrack);
-#else
+#elif UE_VERSION_OLDER_THAN(5,2,0)
 		ase->GetController().AddBoneTrack(BoneName);
+		ase->GetController().SetBoneTrackKeys(BoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
+#else
+		ase->GetController().AddBoneCurve(BoneName);
 		ase->GetController().SetBoneTrackKeys(BoneName, RawTrack.PosKeys, RawTrack.RotKeys, RawTrack.ScaleKeys);
 #endif
 
@@ -1689,10 +1778,19 @@ bool UVrmBPFunctionLibrary::VRMBakeAnim(const USkeletalMeshComponent* skc, const
 #if	UE_VERSION_OLDER_THAN(5,0,0)
 		ase->SequenceLength = totalTime;
 		ase->MarkRawDataAsModified();
-#else
+#elif UE_VERSION_OLDER_THAN(5,2,0)
 		ase->GetController().SetPlayLength(totalTime);
-		//ase->MarkRawDataAsModified();
 		ase->SetUseRawDataOnly(true);
+		ase->FlagDependentAnimationsAsRawDataOnly();
+		ase->UpdateDependentStreamingAnimations();
+#elif UE_VERSION_OLDER_THAN(5,6,0)
+		ase->GetController().SetNumberOfFrames(ase->GetController().ConvertSecondsToFrameNumber(totalTime));
+		ase->SetUseRawDataOnly(true);
+		ase->FlagDependentAnimationsAsRawDataOnly();
+		ase->UpdateDependentStreamingAnimations();
+#else
+		ase->GetController().SetNumberOfFrames(ase->GetController().ConvertSecondsToFrameNumber(totalTime));
+		//ase->SetUseRawDataOnly(true);
 		ase->FlagDependentAnimationsAsRawDataOnly();
 		ase->UpdateDependentStreamingAnimations();
 #endif
@@ -1746,7 +1844,11 @@ void UVrmBPFunctionLibrary::VRMGetAllActorsHasSceneComponent(const UObject* Worl
 
 void UVrmBPFunctionLibrary::VRMGetRigNodeNameFromBoneName(const USkeleton* skeleton, const FName& boneName, FName& RigNodeName){
 #if WITH_EDITOR
+#if UE_VERSION_OLDER_THAN(5,4,0)
 	RigNodeName = skeleton->GetRigNodeNameFromBoneName(boneName);
+#else
+	RigNodeName = NAME_None;
+#endif
 #endif
 }
 
@@ -1760,11 +1862,17 @@ void UVrmBPFunctionLibrary::VRMSetPerBoneMotionBlur(USkinnedMeshComponent* Skinn
 //void UVrmBPFunctionLibrary::GetIKRigDefinition(UIKRetargeter, UIKRigDefinition*& src, UIKRigDefinition*& target) {
 void UVrmBPFunctionLibrary::VRMGetIKRigDefinition(UObject *retargeter, UObject * &src, UObject * &target) {
 #if	UE_VERSION_OLDER_THAN(5,0,0)
-#else
+#elif UE_VERSION_OLDER_THAN(5,4,0)
 	UIKRetargeter* r = Cast<UIKRetargeter>(retargeter);
 	if (r) {
 		src = Cast<UIKRigDefinition>(r->GetSourceIKRigWriteable());
 		target = Cast <UIKRigDefinition>(r->GetTargetIKRigWriteable());
+	}
+#else
+	UIKRetargeter* r = Cast<UIKRetargeter>(retargeter);
+	if (r) {
+		src = Cast<UIKRigDefinition>(r->GetIKRigWriteable(ERetargetSourceOrTarget::Source));
+		target = Cast <UIKRigDefinition>(r->GetIKRigWriteable(ERetargetSourceOrTarget::Target));
 	}
 #endif
 }
@@ -1801,3 +1909,115 @@ void UVrmBPFunctionLibrary::VRMGetTopLevelAssetName(const FAssetData& target, FN
 #endif
 
 }
+
+
+UVrmAssetListObject* UVrmBPFunctionLibrary::VRMGetVrmAssetListObjectFromAsset(const UObject* Asset) {
+	return VRMUtil::GetAssetListObjectAny(Asset);
+}
+
+
+bool UVrmBPFunctionLibrary::VRMIsMovieRendering() {
+#if VRM4U_USE_MRQ
+	if (GEditor) {
+		UMoviePipelineQueueSubsystem* s = GEditor->GetEditorSubsystem<UMoviePipelineQueueSubsystem>();
+		if (s == nullptr) return false;
+
+		return s->IsRendering();
+	}
+#endif
+	return false;
+}
+
+bool UVrmBPFunctionLibrary::VRMIsTemporaryObject(const UObject *obj) {
+	if (obj == nullptr) return true;
+
+	if (obj->HasAnyFlags(EObjectFlags::RF_Transient)) {
+		return true;
+	}
+	return false;
+}
+
+bool UVrmBPFunctionLibrary::VRMIsEditorPreviewObject(const UObject* obj) {
+	if (obj == nullptr) return true;
+
+	const UWorld* World = obj->GetWorld();
+
+	if (World == nullptr) return true;
+
+	if (World->WorldType == EWorldType::EditorPreview)
+	{
+		return true;
+	}
+
+	return false;
+}
+
+void UVrmBPFunctionLibrary::VRMGetViewportSize(FIntPoint & ViewportSize, FIntPoint & BufferSize, bool bForceMainView){
+
+	ViewportSize = FIntPoint(0, 0);
+	BufferSize = FIntPoint(0, 0);
+
+	bool bFoundViewport = false;
+
+#if WITH_EDITOR
+	//bool bPlay, bool bSIE, bool bEditor
+	bool bPlay, bSIE, bEditor;
+	VRMGetPlayMode(bPlay, bSIE, bEditor);
+
+	bool bGameView = bPlay;
+	if (bSIE) {
+		bGameView = false;
+	}
+
+	if (GEditor == nullptr) {
+		bGameView = true;
+	}else{
+		if (GEditor->GetActiveViewport() == nullptr) bGameView = true;
+	}
+
+	if (GEditor) {
+		if (bGameView == false) {
+			bFoundViewport = true;
+			ViewportSize = GEditor->GetActiveViewport()->GetRenderTargetTextureSizeXY();
+			if (bForceMainView)
+			{
+				FViewportClient* ViewportClient = GEditor->GetActiveViewport()->GetClient();
+				UWorld* ViewportWorld = ViewportClient ? ViewportClient->GetWorld() : nullptr;
+
+				const EWorldType::Type WT = ViewportWorld ? (EWorldType::Type)ViewportWorld->WorldType : EWorldType::None;
+				const bool bIsEditorViewport = (WT == EWorldType::Editor);
+				const bool bIsPreviewOrThumbnail = (WT == EWorldType::EditorPreview);
+
+				// レベルエディタのビューポートだけ採用
+				if (bIsEditorViewport && !bPlay && !bSIE && !bIsPreviewOrThumbnail)
+				{
+					BufferSize = ViewportSize;
+					return;
+				}
+			}
+		}
+	}
+#endif
+
+	if (bFoundViewport == false){
+		if (GEngine == nullptr) return;
+		if (GEngine->GameViewport == nullptr) return;
+		if (GEngine->GameViewport->Viewport == nullptr) return;
+
+		FViewport* Viewport = GEngine->GameViewport->Viewport;
+		ViewportSize = Viewport->GetRenderTargetTextureSizeXY();
+	}
+
+#if	UE_VERSION_OLDER_THAN(5,6,0)
+	float ScreenPercentage = FMath::Clamp(UKismetSystemLibrary::GetConsoleVariableFloatValue("r.ScreenPercentage"), 1.f, 100.f);
+	BufferSize = FIntPoint (
+		FMath::RoundToInt(ViewportSize.X * ScreenPercentage / 100.0f),
+		FMath::RoundToInt(ViewportSize.Y * ScreenPercentage / 100.0f)
+	);
+#else
+	BufferSize = GPixelRenderCounters.GetRenderResolution();
+#endif
+
+}
+
+

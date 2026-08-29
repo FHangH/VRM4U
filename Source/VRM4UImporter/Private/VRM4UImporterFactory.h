@@ -1,10 +1,11 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "EditorReimportHandler.h"
 #include "Factories/Factory.h"
+#include "VrmUtil.h"
 #include "VRM4UImporterFactory.generated.h"
 
 UCLASS()
@@ -28,7 +29,10 @@ class UVRM4UImporterFactory : public UFactory, public FReimportHandler
 	// End of FReimportHandler interface
 
 protected:
+	friend class UVrmImporterBPFunctionLibrary;
 
 	FString fullFileName;
 	class UVrmAssetListObject* ReimportBase = nullptr;
+	bool bUseProvidedImportOptions = false;
+	FImportOptionData ProvidedImportOptions;
 };

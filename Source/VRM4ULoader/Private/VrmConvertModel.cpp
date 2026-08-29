@@ -1,6 +1,6 @@
 ﻿// Copyright 1998-2018 Epic Games, Inc. All Rights Reserved.
 // The code associated with the initialization of the mesh is based on the Engine source.
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 
 #include "VrmConvertModel.h"
@@ -11,6 +11,11 @@
 #include "VrmSkeleton.h"
 #include "LoaderBPFunctionLibrary.h"
 #include "VRM4ULoaderLog.h"
+
+#if	UE_VERSION_OLDER_THAN(5,1,0)
+#else
+#include "VrmAssetUserData.h"
+#endif
 
 #include "Engine/SkeletalMesh.h"
 #include "RenderingThread.h"
@@ -24,11 +29,16 @@
 
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsEngine/PhysicsConstraintTemplate.h"
-
 #include "Internationalization/Internationalization.h"
 
-#include "Animation/AnimSequence.h"
+#if	UE_VERSION_OLDER_THAN(5,5,0)
+#else
+#include "PhysicsEngine/SkeletalBodySetup.h"
+#endif
 
+
+#include "Animation/AnimSequence.h"
+#include "Animation/AnimBlueprint.h"
 #include "Async/ParallelFor.h"
 
 #include <assimp/Importer.hpp>
@@ -37,6 +47,11 @@
 #include <assimp/postprocess.h>
 #include <assimp/GltfMaterial.h>
 #include <assimp/vrm/vrmmeta.h>
+
+#if WITH_EDITOR
+#include "Kismet2/KismetEditorUtilities.h"
+#endif
+
 
 #define LOCTEXT_NAMESPACE "VRM4U"
 
@@ -172,6 +187,10 @@ static int GetChildBoneLocal(const USkeleton *skeleton, const int32 ParentBoneIn
 
 static void FindMeshInfo(const aiScene* scene, aiNode* node, FReturnedData& result, UVrmAssetListObject *vrmAssetList)
 {
+	if (VRMConverter::Options::Get().IsDebugNoMesh()) {
+		return;
+	}
+
 	for (uint32 MeshNo = 0; MeshNo < node->mNumMeshes; MeshNo++)
 	{
 		FString Fs = UTF8_TO_TCHAR(node->mName.C_Str());
@@ -184,22 +203,6 @@ static void FindMeshInfo(const aiScene* scene, aiNode* node, FReturnedData& resu
 		bool bSkin = true;
 		if (mesh->mNumBones == 0) {
 			bSkin = false;
-		}
-
-		if (0) {
-			int m = mesh->mNumVertices;
-			mi.Vertices.Reserve(m);
-			mi.Normals.Reserve(m);
-
-			if (mesh->HasVertexColors(0)) {
-				mi.VertexColors.Reserve(m);
-			}
-			if (mesh->HasTangentsAndBitangents()) {
-				mi.Tangents.Reserve(m);
-			}
-			if (mesh->HasTextureCoords(0)) {
-				mi.UV0.Reserve(m);
-			}
 		}
 
 		//transform.
@@ -336,7 +339,7 @@ static void FindMeshInfo(const aiScene* scene, aiNode* node, FReturnedData& resu
 							UE_LOG(LogVRM4ULoader, Warning, TEXT("test uv2.\n"));
 						}
 					}
-					FVector2D uv = FVector2D(mesh->mTextureCoords[u][j].x, -mesh->mTextureCoords[u][j].y);
+					FVector2D uv = FVector2D(mesh->mTextureCoords[u][j].x, 1.0-mesh->mTextureCoords[u][j].y);
 					mi.UV0[u].Add(uv);
 				}
 			}
@@ -588,7 +591,19 @@ static void CreateSwingHead(UVrmAssetListObject *vrmAssetList, VRM::VRMSpring &s
 	}
 }
 
-bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
+bool VRMConverter::ConvertModel(UVrmAssetListObject* vrmAssetList) {
+
+
+#if	UE_VERSION_OLDER_THAN(5,8,0)
+	return ConvertModel_internal(vrmAssetList);
+#else
+	return ConvertModel_internal_description(vrmAssetList);
+#endif
+
+}
+
+bool VRMConverter::ConvertModel_internal(UVrmAssetListObject *vrmAssetList) {
+
 	if (vrmAssetList == nullptr) {
 		return false;
 	}
@@ -606,7 +621,7 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 		UE_LOG(LogVRM4ULoader, Warning, TEXT("test null.\n"));
 	}
 
-	if (aiData->HasMeshes())
+	if (aiData->HasMeshes() && VRMConverter::Options::Get().IsDebugNoMesh() == false)
 	{
 
 		// !! before remove unused vertex !!
@@ -655,8 +670,7 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 				}
 			}
 		}
-
-		result.meshInfo.SetNum(aiData->mNumMeshes, false);
+		result.meshInfo.SetNum(aiData->mNumMeshes);
 
 
 		// find and remove unused vertex
@@ -682,7 +696,6 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 							continue;
 						}
 					}
-
 
 					result.meshInfo[meshNo].Triangles.Push(aiData->mMeshes[meshNo]->mFaces[faceNo].mIndices[indexNo]);
 
@@ -727,6 +740,14 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 			sk = VRM4U_NewObject<USkeletalMesh>(vrmAssetList->Package, *name, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone);
 		}
 	}
+#if	UE_VERSION_OLDER_THAN(5,1,0)
+#else
+	if (sk) {
+		UVrmAssetUserData*d  = NewObject<UVrmAssetUserData>(sk, NAME_None, RF_Public | RF_Transactional);
+		d->VrmAssetListObject = vrmAssetList;
+		sk->AddAssetUserData(d);
+	}
+#endif
 
 	{
 #if WITH_EDITOR
@@ -974,11 +995,29 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 #endif
 		}
 
+		bool bHasNormals = aiData->mNumMeshes > 0;
+		bool bHasTangents = aiData->mNumMeshes > 0;
+		for (uint32 MeshIndex = 0; MeshIndex < aiData->mNumMeshes; ++MeshIndex) {
+			const aiMesh* Mesh = aiData->mMeshes[MeshIndex];
+			bHasNormals &= Mesh != nullptr && Mesh->HasNormals();
+			bHasTangents &= Mesh != nullptr && Mesh->HasTangentsAndBitangents();
+		}
 
-		if (VRMConverter::Options::Get().IsVRM10Model() && VRMConverter::Options::Get().IsVRM10Bindpose() == false) {
+		// Keep source normals/tangents when every submesh provides them, and
+		// only ask Unreal to recompute attributes that are missing.
+		if (FSkeletalMeshLODInfo* LODInfo = sk->GetLODInfo(0)) {
+			LODInfo->BuildSettings.bRecomputeNormals = !bHasNormals;
+			LODInfo->BuildSettings.bRecomputeTangents = !bHasTangents;
+		}
+
+
+		if (VRMConverter::Options::Get().IsVRM10Model() && VRMConverter::Options::Get().IsVRM10Bindpose() == false
+			&& VRMConverter::Options::Get().IsDebugOneBone() == false
+			&& VRMConverter::Options::Get().IsVRM10BindToRestPose() == true) {
 			if (vrmAssetList->Pose_bind.Num() == 0 || vrmAssetList->Pose_tpose.Num() == 0) {
 				UE_LOG(LogVRM4ULoader, Warning, TEXT("BindPose -> TPose :: no bindpose array!"));
-			}else{
+			}
+			else {
 				auto& info = vrmAssetList->MeshReturnedData->meshInfo;
 				struct WeightData {
 					FString boneName;
@@ -1021,11 +1060,15 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 				{
 					int vertexOffset = 0;
 					for (uint32_t meshNo = 0; meshNo < scene->mNumMeshes; ++meshNo) {
+						if (info.IsValidIndex(meshNo) == false) {
+							break;
+						}
 						auto* mesh = scene->mMeshes[meshNo];
 
 						for (int vertexNo = 0; vertexNo < info[meshNo].Vertices.Num(); ++vertexNo) {
 							FVector v_orig = info[meshNo].Vertices[vertexNo];
-							v_orig.Set(mesh->mVertices[vertexNo].x, mesh->mVertices[vertexNo].y, mesh->mVertices[vertexNo].z);
+							//v_orig.Set(mesh->mVertices[vertexNo].x, mesh->mVertices[vertexNo].y, mesh->mVertices[vertexNo].z);
+							v_orig.Set(mesh->mVertices[vertexNo].x, -mesh->mVertices[vertexNo].z, mesh->mVertices[vertexNo].y);
 							FVector v(0, 0, 0);
 
 							if (weightTable.Find(vertexOffset + vertexNo) == nullptr) {
@@ -1052,6 +1095,7 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 									UE_LOG(LogVRM4ULoader, Warning, TEXT("BindPose -> TPose :: no pose transform %p %p"), tpose, bpose);
 								}
 							}
+							v.Set(v.X, v.Z, -v.Y);
 							info[meshNo].Vertices[vertexNo] = v / 100.f;
 						}
 						vertexOffset += mesh->mNumVertices;
@@ -1075,7 +1119,7 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 #if	UE_VERSION_OLDER_THAN(4,23,0)
 			new(p->LODRenderData) FSkeletalMeshLODRenderData();
 #else
-			auto *tmp = new FSkeletalMeshLODRenderData();
+			auto* tmp = new FSkeletalMeshLODRenderData();
 			p->LODRenderData.Add(tmp);
 #endif
 		}
@@ -1102,9 +1146,9 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 #else
 				TArray<FSkinWeightInfo> InWeights;
 #endif
-				
+
 				InWeights.SetNum(allVertex);
-				for (auto &a : InWeights) {
+				for (auto& a : InWeights) {
 					memset(a.InfluenceBones, 0, sizeof(a.InfluenceBones));
 					memset(a.InfluenceWeights, 0, sizeof(a.InfluenceWeights));
 				}
@@ -1115,7 +1159,12 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 
 		sk->InitResources();
 
-		VRMGetMaterials(sk).SetNum(vrmAssetList->Materials.Num());
+
+		if (VRMConverter::Options::Get().IsDebugNoMaterial()) {
+			//VRMGetMaterials(sk).SetNum(vrmAssetList->Materials.Num());
+		}else{
+			VRMGetMaterials(sk).SetNum(vrmAssetList->Materials.Num());
+		}
 		for (int i = 0; i < VRMGetMaterials(sk).Num(); ++i) {
 			VRMGetMaterials(sk)[i].MaterialInterface = vrmAssetList->Materials[i];
 			VRMGetMaterials(sk)[i].MaterialSlotName = UTF8_TO_TCHAR(aiData->mMaterials[i]->GetName().C_Str());
@@ -1206,7 +1255,7 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 
 					v.PositionVertexBuffer.VertexPosition(currentVertex + i).Set(-a.X, a.Z, a.Y);
 					if (VRMConverter::Options::Get().IsVRM10Model()) {
-						v.PositionVertexBuffer.VertexPosition(currentVertex + i).Set(a.X, a.Y, a.Z);
+						v.PositionVertexBuffer.VertexPosition(currentVertex + i).Set(a.X, -a.Z, a.Y);
 					}else if (VRMConverter::Options::Get().IsPMXModel() || VRMConverter::Options::Get().IsBVHModel()) {
 						v.PositionVertexBuffer.VertexPosition(currentVertex + i).X *= -1.f;
 						v.PositionVertexBuffer.VertexPosition(currentVertex + i).Y *= -1.f;
@@ -1227,21 +1276,38 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 #endif
 					}
 
-					if (i < mInfo.Tangents.Num()){
+					if (i < mInfo.Normals.Num()){
 						//v.StaticMeshVertexBuffer.SetVertexTangents(currentVertex + i, FVector(1, 0, 0), FVector(0, 1, 0), FVector(0, 0, 1));
 						//v.StaticMeshVertexBuffer.SetVertexTangents(currentVertex + i, result.meshInfo[meshID].Tangents);
 						auto &n = mInfo.Normals[i];
 						FVector n_tmp(-n.X, n.Z, n.Y);
-						FVector t_tmp(-mInfo.Tangents[i].X, mInfo.Tangents[i].Z, mInfo.Tangents[i].Y);
-
-						if (VRMConverter::Options::Get().IsVRM10Model() || VRMConverter::Options::Get().IsPMXModel() || VRMConverter::Options::Get().IsBVHModel()) {
-							FVector tmpv(-1, -1, 1);
-							n_tmp *= tmpv;
-							t_tmp *= tmpv;
+						const bool bHasTangent = i < mInfo.Tangents.Num();
+						FVector t_tmp = FVector::ZeroVector;
+						if (bHasTangent) {
+							t_tmp.Set(-mInfo.Tangents[i].X, mInfo.Tangents[i].Z, mInfo.Tangents[i].Y);
 						}
 
-						t_tmp.Normalize();
+						if (VRMConverter::Options::Get().IsVRM10Model()) {
+							n_tmp.Set(n.X, -n.Z, n.Y);
+							if (bHasTangent) {
+								t_tmp.Set(mInfo.Tangents[i].X, -mInfo.Tangents[i].Z, mInfo.Tangents[i].Y);
+							}
+						}
+						if (VRMConverter::Options::Get().IsPMXModel() || VRMConverter::Options::Get().IsBVHModel()) {
+							FVector tmpv(-1, -1, 1);
+							n_tmp *= tmpv;
+							if (bHasTangent) {
+								t_tmp *= tmpv;
+							}
+						}
+
 						n_tmp.Normalize();
+						if (bHasTangent) {
+							t_tmp.Normalize();
+						} else {
+							const FVector ReferenceAxis = FMath::Abs(n_tmp.Z) < 0.999f ? FVector::UpVector : FVector::ForwardVector;
+							t_tmp = (ReferenceAxis ^ n_tmp).GetSafeNormal();
+						}
 
 #if	UE_VERSION_OLDER_THAN(5,0,0)
 						meshS->TangentX = t_tmp;
@@ -1296,6 +1362,9 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 							continue;
 						}
 						for (int jj = 0; jj < MAX_TOTAL_INFLUENCES; ++jj) {
+							if (Weight.IsValidIndex(aiW.mVertexId + currentVertex) == false) {
+								continue;
+							}
 							auto& s = Weight[aiW.mVertexId + currentVertex];
 							if (s.InfluenceWeights[jj] > 0) {
 								continue;
@@ -1329,6 +1398,9 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 							continue;
 						}
 						for (int jj = 0; jj < MAX_TOTAL_INFLUENCES; ++jj) {
+							if (Weight.IsValidIndex(aiW.mVertexId + currentVertex) == false) {
+								continue;
+							}
 							auto &s = Weight[aiW.mVertexId + currentVertex];
 							if (s.InfluenceWeights[jj] > 0) {
 								continue;
@@ -1775,7 +1847,7 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 				p->ActiveBoneIndices = rd.ActiveBoneIndices;
 				p->RequiredBones = rd.RequiredBones;
 			}
-#else
+#else // game
 
 #if	UE_VERSION_OLDER_THAN(4,25,0)
 #else
@@ -1808,12 +1880,25 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 
 				pRd->ReleaseResources();
 				pRd->SkinWeightVertexBuffer = InWeights;
-
+#if	UE_VERSION_OLDER_THAN(5,4,0)
 				pRd->InitResources(false, 0, VRMGetMorphTargets(sk), sk);
+#else
+				{
+					TArray<UMorphTarget*> dummy;
+					for (auto& a : VRMGetMorphTargets(sk)) {
+						dummy.Add(a);
+					}
+#if UE_VERSION_OLDER_THAN(5,7,0)
+					pRd->InitResources(false, 0, dummy, sk);
+#else
+					pRd->InitResources(false, 0, sk);
+#endif
+				}
+#endif // 5.4
 			}
-#endif
+#endif // 4.25
 
-#endif
+#endif // editor
 
 			//rd.StaticVertexBuffers.StaticMeshVertexBuffer.TexcoordDataPtr;
 
@@ -1821,13 +1906,20 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 				ENQUEUE_RENDER_COMMAND(UpdateCommand)(
 					[sk, Triangles, Weight](FRHICommandListImmediate& RHICmdList)
 				{
+
+#if	UE_VERSION_OLDER_THAN(5,3,0)
+#define VRM4U_RHI_CMD_LIST
+#else
+#define VRM4U_RHI_CMD_LIST RHICmdList
+#endif
+
 					FSkeletalMeshLODRenderData &d = sk->GetResourceForRendering()->LODRenderData[0];
 
 					if (d.MultiSizeIndexContainer.IsIndexBufferValid()) {
 						d.MultiSizeIndexContainer.GetIndexBuffer()->ReleaseResource();
 					}
 					d.MultiSizeIndexContainer.RebuildIndexBuffer(sizeof(uint32), Triangles);
-					d.MultiSizeIndexContainer.GetIndexBuffer()->InitResource();
+					d.MultiSizeIndexContainer.GetIndexBuffer()->InitResource(VRM4U_RHI_CMD_LIST);
 
 					//d.AdjacencyMultiSizeIndexContainer.CopyIndexBuffer(Triangles);
 #if	UE_VERSION_OLDER_THAN(5,0,0)
@@ -1880,10 +1972,10 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 #else
 #endif
 
-					d.StaticVertexBuffers.PositionVertexBuffer.UpdateRHI();
-					d.StaticVertexBuffers.StaticMeshVertexBuffer.UpdateRHI();
+					d.StaticVertexBuffers.PositionVertexBuffer.UpdateRHI(VRM4U_RHI_CMD_LIST);
+					d.StaticVertexBuffers.StaticMeshVertexBuffer.UpdateRHI(VRM4U_RHI_CMD_LIST);
 
-					d.MultiSizeIndexContainer.GetIndexBuffer()->UpdateRHI();
+					d.MultiSizeIndexContainer.GetIndexBuffer()->UpdateRHI(VRM4U_RHI_CMD_LIST);
 #if	UE_VERSION_OLDER_THAN(5,0,0)
 					d.AdjacencyMultiSizeIndexContainer.GetIndexBuffer()->UpdateRHI();
 #endif
@@ -2000,11 +2092,29 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 		}
 	}
 	if (aiData->mVRMMeta && Options::Get().IsSkipPhysics()==false) {
-		VRM::VRMMetadata *meta = reinterpret_cast<VRM::VRMMetadata*>(aiData->mVRMMeta);
+
+		bool spring0 = false;
+		bool spring1 = false;
+
+		VRM::VRMMetadata* meta = reinterpret_cast<VRM::VRMMetadata*>(aiData->mVRMMeta);
+		// vrm0
 		if (meta->springNum > 0) {
+			spring0 = true;
+		}
+
+		if (vrmAssetList) {
+			if (vrmAssetList->VrmMetaObject) {
+				if (vrmAssetList->VrmMetaObject->VRM1SpringBoneMeta.Colliders.Num() > 0) {
+					spring1 = true;
+				}
+			}
+		}
+
+		if (spring0 || spring1) {
 			if (vrmAssetList->Package == GetTransientPackage()) {
 				pa = VRM4U_NewObject<UPhysicsAsset>(GetTransientPackage(), NAME_None, EObjectFlags::RF_Public | RF_Transient, NULL);
-			}else {
+			}
+			else {
 				FString name = (TEXT("PHYS_") + vrmAssetList->BaseFileName);
 				pa = VRM4U_NewObject<UPhysicsAsset>(vrmAssetList->Package, *name, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone);
 			}
@@ -2015,43 +2125,167 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 			VRMSetPhysicsAsset(sk, pa);
 
 			addedList.Empty();
+		}
+
+		// vrm0
+		if (spring0) {
+			TArray<int> swingBoneIndexArray;
+
+			for (int i = 0; i < meta->springNum; ++i) {
+				auto& spring = meta->springs[i];
+				for (int j = 0; j < spring.boneNum; ++j) {
+					auto& sbone = spring.bones_name[j];
+
+					FString s = UTF8_TO_TCHAR(sbone.C_Str());
+
+					int sboneIndex = VRMGetRefSkeleton(sk).FindRawBoneIndex(*s);
+					if (sboneIndex == INDEX_NONE) {
+						continue;
+					}
+
+					FName parentName = *s;
+					CreateSwingHead(vrmAssetList, spring, parentName, swingBoneIndexArray, sboneIndex);
+
+				}
+			} // all spring
 			{
-				TArray<int> swingBoneIndexArray;
+				swingBoneIndexArray.Sort();
 
-				for (int i = 0; i < meta->springNum; ++i) {
-					auto &spring = meta->springs[i];
-					for (int j = 0; j < spring.boneNum; ++j) {
-						auto &sbone = spring.bones_name[j];
+				for (int i = 0; i < swingBoneIndexArray.Num() - 1; ++i) {
+					for (int j = i + 1; j < swingBoneIndexArray.Num(); ++j) {
+						pa->DisableCollision(swingBoneIndexArray[i], swingBoneIndexArray[j]);
+					}
+				}
+			}
 
-						FString s = UTF8_TO_TCHAR(sbone.C_Str());
+			// collision
+			for (int i = 0; i < meta->colliderGroupNum; ++i) {
+				auto& c = meta->colliderGroups[i];
 
+				USkeletalBodySetup* bs = nullptr;
+				{
+					FString s = UTF8_TO_TCHAR(c.node_name.C_Str());
+					{
 						int sboneIndex = VRMGetRefSkeleton(sk).FindRawBoneIndex(*s);
 						if (sboneIndex == INDEX_NONE) {
 							continue;
 						}
-
-						FName parentName = *s;
-						CreateSwingHead(vrmAssetList, spring, parentName, swingBoneIndexArray, sboneIndex);
-
 					}
-				} // all spring
-				{
-					swingBoneIndexArray.Sort();
+					s = s.ToLower();
 
-					for (int i = 0; i < swingBoneIndexArray.Num()-1; ++i) {
-						for (int j = i+1; j < swingBoneIndexArray.Num(); ++j) {
-							pa->DisableCollision(swingBoneIndexArray[i], swingBoneIndexArray[j]);
+					// addlist changed recur...
+					for (auto& a : pa->SkeletalBodySetups) {
+						if (a->BoneName.IsEqual(*s)) {
+							bs = a;
+							break;
 						}
 					}
 				}
+				if (bs == nullptr) {
+					bs = NewObject<USkeletalBodySetup>(pa, NAME_None, RF_Transactional);
+					bs->InvalidatePhysicsData();
 
-				// collision
-				for (int i = 0; i < meta->colliderGroupNum; ++i) {
-					auto &c = meta->colliderGroups[i];
+					pa->SkeletalBodySetups.Add(bs);
+				}
 
-					USkeletalBodySetup *bs = nullptr;
+				FKAggregateGeom agg;
+				for (int j = 0; j < c.colliderNum; ++j) {
+					FKSphereElem SphereElem;
+					VRM::vec3 v = {
+						c.colliders[j].offset[0] * 100.f,
+						c.colliders[j].offset[1] * 100.f,
+						c.colliders[j].offset[2] * 100.f,
+					};
+
+					SphereElem.Center = FVector(-v[0], v[2], v[1]);
+					SphereElem.Radius = c.colliders[j].radius * 100.f;
+					agg.SphereElems.Add(SphereElem);
+				}
+
+				bs->Modify();
+				bs->BoneName = UTF8_TO_TCHAR(c.node_name.C_Str());
+				bs->AddCollisionFrom(agg);
+				bs->CollisionTraceFlag = CTF_UseSimpleAsComplex;
+				// newly created bodies default to simulating
+				bs->PhysicsType = PhysType_Kinematic;	// fix!
+
+				//bs.constra
+				//sk->SkeletalBodySetups.Num();
+				bs->CreatePhysicsMeshes();
+
+			}// collision
+		}// vrm0
+
+		if (spring1){
+			auto& sm = vrmAssetList->VrmMetaObject->VRM1SpringBoneMeta;
+
+			TArray<int> swingBoneIndexArray;
+
+			for (int i = 0; i < sm.Springs.Num(); ++i) {
+				auto& spring = sm.Springs[i];
+
+				for (int j = 0; j < spring.joints.Num(); ++j) {
+					auto& sbone = spring.joints[j].boneName;
+
+					FString s = sbone;
+
+					int sboneIndex = VRMGetRefSkeleton(sk).FindRawBoneIndex(*s);
+					if (sboneIndex == INDEX_NONE) {
+						continue;
+					}
+
+					FName parentName = *s;
+					//CreateSwingHead(vrmAssetList, spring, parentName, swingBoneIndexArray, sboneIndex);
+
+				}
+			} // all spring
+			{
+				swingBoneIndexArray.Sort();
+
+				for (int i = 0; i < swingBoneIndexArray.Num() - 1; ++i) {
+					for (int j = i + 1; j < swingBoneIndexArray.Num(); ++j) {
+						pa->DisableCollision(swingBoneIndexArray[i], swingBoneIndexArray[j]);
+					}
+				}
+			}
+
+			// collision
+			for (int i = 0; i < sm.ColliderGroups.Num(); ++i) {
+				auto& c = sm.ColliderGroups[i];
+
+				USkeletalBodySetup* bs = nullptr;
+				/*
+				{
+					FString s = c.name;
 					{
-						FString s = UTF8_TO_TCHAR(c.node_name.C_Str());
+						int sboneIndex = VRMGetRefSkeleton(sk).FindRawBoneIndex(*s);
+						if (sboneIndex == INDEX_NONE) {
+							continue;
+						}
+					}
+					s = s.ToLower();
+
+					// addlist changed recur...
+					for (auto& a : pa->SkeletalBodySetups) {
+						if (a->BoneName.IsEqual(*s)) {
+							bs = a;
+							break;
+						}
+					}
+				}
+				*/
+
+				for (int j = 0; j < c.colliders.Num(); ++j) {
+
+					FKAggregateGeom agg;
+
+					int ind = c.colliders[j];
+					auto& col = sm.Colliders[ind];
+
+
+					// sb setup
+					{
+						FString s = col.boneName;
 						{
 							int sboneIndex = VRMGetRefSkeleton(sk).FindRawBoneIndex(*s);
 							if (sboneIndex == INDEX_NONE) {
@@ -2061,16 +2295,11 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 						s = s.ToLower();
 
 						// addlist changed recur...
-						if (1){//addedList.Find(s) >= 0) {
-							for (auto &a : pa->SkeletalBodySetups) {
-								if (a->BoneName.IsEqual(*s)) {
-									bs = a;
-									break;
-								}
+						for (auto& a : pa->SkeletalBodySetups) {
+							if (a->BoneName.IsEqual(*s)) {
+								bs = a;
+								break;
 							}
-
-						}else {
-							addedList.Add(s);
 						}
 					}
 					if (bs == nullptr) {
@@ -2080,34 +2309,66 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 						pa->SkeletalBodySetups.Add(bs);
 					}
 
-					FKAggregateGeom agg;
-					for (int j = 0; j < c.colliderNum; ++j) {
-						FKSphereElem SphereElem;
+
+					if (col.shapeType == TEXT("sphere")) {
 						VRM::vec3 v = {
-							c.colliders[j].offset[0] * 100.f,
-							c.colliders[j].offset[1] * 100.f,
-							c.colliders[j].offset[2] * 100.f,
+							col.offset[0] * 100,
+							col.offset[1] * 100,
+							col.offset[2] * 100
 						};
 
-						SphereElem.Center = FVector(-v[0], v[2], v[1]);
-						SphereElem.Radius = c.colliders[j].radius * 100.f;
+						FKSphereElem SphereElem;
+						SphereElem.Center = FVector(v[0], -v[2], v[1]);
+						SphereElem.Radius = col.radius * 100.f;
 						agg.SphereElems.Add(SphereElem);
 					}
+					else {
+						VRM::vec3 v0 = {
+							col.offset[0] * 100,
+							col.offset[1] * 100,
+							col.offset[2] * 100
+						};
 
+						VRM::vec3 v1 = {
+							col.tail[0] * 100,
+							col.tail[1] * 100,
+							col.tail[2] * 100
+						};
+						VRM::vec3 v = {
+							v0[0] + v1[0] / 2,
+							v0[1] + v1[1] / 2,
+							v0[2] + v1[2] / 2,
+						};
+
+						float len =
+							FMath::Sqrt(
+								FMath::Square(v0[0] - v1[0])
+								+ FMath::Square(v0[1] - v1[1])
+								+ FMath::Square(v0[2] - v1[2])
+							);
+
+
+						FKSphylElem s;
+						s.Center = FVector(v[0], -v[2], v[1]);
+						s.Radius = col.radius * 100.f;
+						s.Length = len;
+						agg.SphylElems.Add(s);
+					}
 					bs->Modify();
-					bs->BoneName = UTF8_TO_TCHAR(c.node_name.C_Str());
+					bs->BoneName = *col.boneName;
 					bs->AddCollisionFrom(agg);
 					bs->CollisionTraceFlag = CTF_UseSimpleAsComplex;
 					// newly created bodies default to simulating
 					bs->PhysicsType = PhysType_Kinematic;	// fix!
 
-															//bs.constra
-															//sk->SkeletalBodySetups.Num();
+					//bs.constra
+					//sk->SkeletalBodySetups.Num();
 					bs->CreatePhysicsMeshes();
-
 				}// collision
-			}
+			}// collision group
+		}
 
+		if (pa){
 			pa->UpdateBodySetupIndexMap();
 
 			RefreshSkelMeshOnPhysicsAssetChange(sk);
@@ -2121,7 +2382,6 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 				pa->PostEditChange();
 			}
 #endif
-
 		}
 		//FSkeletalMeshModel* ImportedResource = sk->GetImportedModel();
 		//if (ImportedResource->LODModels.Num() == 0)
@@ -2160,20 +2420,30 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 #endif
 		Controller.ResetModel();
 
-
 		double AnimDeltaTime = 0.f;
 		{
+			auto UpdateAnimDeltaTime = [&AnimDeltaTime](double DeltaTime) {
+				if (DeltaTime > 0.0 && (AnimDeltaTime <= 0.0 || DeltaTime < AnimDeltaTime)) {
+					AnimDeltaTime = DeltaTime;
+				}
+			};
 			for (uint32_t animNo = 0; animNo < aiData->mNumAnimations; animNo++) {
 				aiAnimation* aiA = aiData->mAnimations[animNo];
+				if (aiA->mTicksPerSecond <= 0.0) {
+					continue;
+				}
 
 				for (uint32_t chanNo = 0; chanNo < aiA->mNumChannels; chanNo++) {
 					aiNodeAnim* aiNA = aiA->mChannels[chanNo];
 
-					for (int i = 0; i < (int)(aiNA->mNumRotationKeys)-1; ++i) {
-						auto dif = (aiNA->mRotationKeys[i+1].mTime - aiNA->mRotationKeys[i].mTime) / aiA->mTicksPerSecond;
-						if (AnimDeltaTime == 0.f && dif != 0.f) {
-							AnimDeltaTime = dif;
-						}
+					for (uint32 i = 0; i + 1 < aiNA->mNumPositionKeys; ++i) {
+						UpdateAnimDeltaTime((aiNA->mPositionKeys[i + 1].mTime - aiNA->mPositionKeys[i].mTime) / aiA->mTicksPerSecond);
+					}
+					for (uint32 i = 0; i + 1 < aiNA->mNumRotationKeys; ++i) {
+						UpdateAnimDeltaTime((aiNA->mRotationKeys[i + 1].mTime - aiNA->mRotationKeys[i].mTime) / aiA->mTicksPerSecond);
+					}
+					for (uint32 i = 0; i + 1 < aiNA->mNumScalingKeys; ++i) {
+						UpdateAnimDeltaTime((aiNA->mScalingKeys[i + 1].mTime - aiNA->mScalingKeys[i].mTime) / aiA->mTicksPerSecond);
 					}
 				}
 			}
@@ -2194,7 +2464,10 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 		}
 		Controller.SetNumberOfFrames(FrameNum - 1);
 #endif
+
+#if	UE_VERSION_OLDER_THAN(5,3,0)
 		Controller.UpdateCurveNamesFromSkeleton(k, ERawCurveTrackTypes::RCT_Float);
+#endif
 
 		//Controller.OpenBracket(LOCTEXT("VRM4U", "Importing BVH"), false);
 
@@ -2211,11 +2484,41 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 
 			for (uint32_t animNo = 0; animNo < aiData->mNumAnimations; animNo++) {
 				aiAnimation* aiA = aiData->mAnimations[animNo];
-				
+
 				for (uint32_t chanNo = 0; chanNo < aiA->mNumChannels; chanNo++) {
 					aiNodeAnim* aiNA = aiA->mChannels[chanNo];
 
 					FRawAnimSequenceTrack RawTrack;
+
+					bool isRootBone = false;
+					FName NodeName = UTF8_TO_TCHAR(aiNA->mNodeName.C_Str());
+					if (VRMConverter::Options::Get().IsVRMAModel()) {
+						if (vrmAssetList->VrmMetaObject) {
+							for (auto& t : vrmAssetList->VrmMetaObject->humanoidBoneTable) {
+
+								if (t.Value == NodeName.ToString()) {
+									NodeName = *t.Key;
+									break;
+								}
+							}
+						}
+					}
+					FTransform ReferencePose = FTransform::Identity;
+					const int32 ReferenceBoneIndex = k->GetReferenceSkeleton().FindBoneIndex(NodeName);
+					if (ReferenceBoneIndex != INDEX_NONE) {
+						ReferencePose = k->GetReferenceSkeleton().GetRefBonePose()[ReferenceBoneIndex];
+					}
+					{
+						auto ind = ReferenceBoneIndex;
+						if (ind != INDEX_NONE) {
+							ind = k->GetReferenceSkeleton().GetParentIndex(ind);
+							if (ind == INDEX_NONE) {
+								// root bone. no parent.
+
+								isRootBone = true;
+							}
+						}
+					}
 
 					{
 						for (uint32_t i = 0; i < aiNA->mNumPositionKeys; ++i) {
@@ -2224,13 +2527,28 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 							float Scale = 1.f;
 							if (VRMConverter::Options::Get().IsVRMAModel()) {
 								Scale = 100.f;
+							} else if (VRMConverter::Options::Get().IsBVHModel()) {
+								Scale = 100.f * VRMConverter::Options::Get().GetModelScale();
 							}
 							FVector pos(-v.x, v.z, v.y);
 							pos *= Scale * VRMConverter::Options::Get().GetAnimationTranslateScale();
-							if (VRMConverter::Options::Get().IsVRM10Model() || VRMConverter::Options::Get().IsPMXModel() || VRMConverter::Options::Get().IsBVHModel()) {
+							if (VRMConverter::Options::Get().IsVRM10Model()) {
+								pos.Set(v.x, -v.z, v.y);
+								pos *= Scale * VRMConverter::Options::Get().GetAnimationTranslateScale();
+							}
+							if (VRMConverter::Options::Get().IsPMXModel() || VRMConverter::Options::Get().IsBVHModel()) {
 								pos.X *= -1.f;
 								pos.Y *= -1.f;
 							}
+							//if (VRMConverter::Options::Get().IsVRMAModel() ) {
+							//	if (isRootBone) {
+							//		pos.X *= -1.f;
+							//		pos.Y *= -1.f;
+							//	}else {
+							//		pos.Set(v.x, v.y, v.z);
+							//		pos *= Scale * VRMConverter::Options::Get().GetAnimationTranslateScale();
+							//	}
+							//}
 #if UE_VERSION_OLDER_THAN(5,0,0)
 							RawTrack.PosKeys.Add(pos);
 #else
@@ -2266,9 +2584,14 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 								}
 #else
 								q = FQuat4f(-v.x, v.y, v.z, -v.w);
-								{
+
+								if (VRMConverter::Options::Get().IsBVHModel()) {
 									auto d = FQuat4f(FVector3f(1, 0, 0), -PI / 2.f);
 									q = d * q * d.Inverse();
+								}
+
+								if (VRMConverter::Options::Get().IsVRM10Model()) {
+									q = FQuat4f(v.x, -v.z, v.y, v.w);
 								}
 #endif
 
@@ -2302,23 +2625,32 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 
 #if UE_VERSION_OLDER_THAN(5,0,0)
 						if (RawTrack.PosKeys.Num() == 0) {
-							RawTrack.PosKeys.Add(FVector::ZeroVector);
+							RawTrack.PosKeys.Add(ReferencePose.GetTranslation());
 						}
 						if (RawTrack.RotKeys.Num() == 0) {
-							RawTrack.RotKeys.Add(FQuat::Identity);
+							RawTrack.RotKeys.Add(ReferencePose.GetRotation());
 						}
 						if (RawTrack.ScaleKeys.Num() == 0) {
-							RawTrack.ScaleKeys.Add(FVector::OneVector);
+							RawTrack.ScaleKeys.Add(ReferencePose.GetScale3D());
 						}
 #else
+						const FVector3f PositionFallback = RawTrack.PosKeys.Num() > 0
+							? RawTrack.PosKeys.Last()
+							: FVector3f(ReferencePose.GetTranslation());
+						const FQuat4f RotationFallback = RawTrack.RotKeys.Num() > 0
+							? RawTrack.RotKeys.Last()
+							: FQuat4f(ReferencePose.GetRotation());
+						const FVector3f ScaleFallback = RawTrack.ScaleKeys.Num() > 0
+							? RawTrack.ScaleKeys.Last()
+							: FVector3f(ReferencePose.GetScale3D());
 						while (RawTrack.PosKeys.Num() < FrameNum) {
-							RawTrack.PosKeys.Add(FVector3f::ZeroVector);
+							RawTrack.PosKeys.Add(PositionFallback);
 						}
 						while (RawTrack.RotKeys.Num() < FrameNum) {
-							RawTrack.RotKeys.Add(FQuat4f::Identity);
+							RawTrack.RotKeys.Add(RotationFallback);
 						}
 						while (RawTrack.ScaleKeys.Num() < FrameNum) {
-							RawTrack.ScaleKeys.Add(FVector3f::OneVector);
+							RawTrack.ScaleKeys.Add(ScaleFallback);
 						}
 #endif
 
@@ -2330,17 +2662,36 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 						}
 #else
 						{
-							FName NodeName = UTF8_TO_TCHAR(aiNA->mNodeName.C_Str());
-							
 							if (VRMConverter::Options::Get().IsVRMAModel()) {
-								if (vrmAssetList->VrmMetaObject) {
-									for (auto& t : vrmAssetList->VrmMetaObject->humanoidBoneTable) {
+								auto &presetList = vrmAssetList->VrmMetaObject->VRMAnimationMeta.expressionPreset;
+								for (auto& p : presetList) {
+									if (NodeName != *p.expressionNodeName) continue;
 
-										if (t.Value == NodeName.ToString()) {
-											NodeName = *t.Key;
-											break;
+									FFloatCurve c;
+									c.SetCurveTypeFlag(AACF_Editable, true);
+
+
+									auto boneNo = k->GetReferenceSkeleton().FindBoneIndex(*p.expressionNodeName);
+									if (boneNo != INDEX_NONE) {
+
+										for (int i = 0; i < RawTrack.PosKeys.Num(); ++i) {
+											c.UpdateOrAddKey(RawTrack.PosKeys[i].X / 100.f, i * AnimDeltaTime);
 										}
 									}
+#if	UE_VERSION_OLDER_THAN(5,3,0)
+									FSmartName sm;
+									{
+										TArray<FName> a = {*p.expressionName };
+										k->RemoveSmartnamesAndModify(USkeleton::AnimCurveMappingName, a);
+									}
+									k->AddSmartNameAndModify(USkeleton::AnimCurveMappingName, *p.expressionName, sm);
+									FAnimationCurveIdentifier f(sm, ERawCurveTrackTypes::RCT_Float);
+#else
+									FAnimationCurveIdentifier f(*p.expressionName, ERawCurveTrackTypes::RCT_Float);
+#endif
+									FName name;
+									Controller.AddCurve(f);
+									Controller.SetCurveKeys(f, c.FloatCurve.GetConstRefOfKeys());
 								}
 							}
 
@@ -2391,6 +2742,31 @@ bool VRMConverter::ConvertModel(UVrmAssetListObject *vrmAssetList) {
 		ase->PostEditChange();
 	}
 
+	{
+		FSoftObjectPath r(TEXT("/VRM4U/Util/Actor/latest/ABP_PostProcessBase.ABP_PostProcessBase"));
+		UObject* u = r.TryLoad();
+
+		if (u) {
+			FString name = FString(TEXT("ABP_Post_")) + vrmAssetList->BaseFileName;
+
+			auto b = Cast<UAnimBlueprint>(VRM4U_StaticDuplicateObject(u, vrmAssetList->Package, *name, EObjectFlags::RF_Public | EObjectFlags::RF_Standalone));
+			if (b) {
+				b->MarkPackageDirty();
+				b->TargetSkeleton = k;
+				b->SetPreviewMesh(sk);
+#if WITH_EDITOR
+				FKismetEditorUtilities::CompileBlueprint(b);
+#endif
+				UBlueprintGeneratedClass* bpClass = Cast<UBlueprintGeneratedClass>(b->GeneratedClass);
+#if	UE_VERSION_OLDER_THAN(4,27,0)
+				sk->PostProcessAnimBlueprint = bpClass;
+#else
+				sk->SetPostProcessAnimBlueprint(bpClass);
+#endif
+				sk->PostEditChange();
+			}
+		}
+	}
 #endif
 
 	return true;

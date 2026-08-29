@@ -1,4 +1,4 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 #pragma once
 
@@ -9,8 +9,8 @@
 #include "Animation/AnimNodeBase.h"
 #include "Misc/EngineVersionComparison.h"
 
-#if	UE_VERSION_OLDER_THAN(5,3,0)
-static_assert(0, "Available for UE5.3+. delete h/cpp files");
+#if	UE_VERSION_OLDER_THAN(5,2,0)
+static_assert(0, "Available for UE5.2+. delete h/cpp files");
 #endif
 
 #include "Retargeter/IKRetargeter.h"
@@ -35,10 +35,10 @@ public:
 	int CalcCount = 0;
 	TSharedPtr<FAnimNode_VrmSpringBone> Node_SpringBone;
 	TSharedPtr<FAnimNode_VrmConstraint> Node_Constraint;
-#if	UE_VERSION_OLDER_THAN(5,3,0)
+#if	UE_VERSION_OLDER_THAN(5,2,0)
 #else
 	//TWeakObjectPtr<USkeletalMeshComponent> RetargetSourceMeshComponent = nullptr;
-	TAssetPtr<UIKRetargeter> Retargeter;
+	TSoftObjectPtr<UIKRetargeter> Retargeter;
 	TSharedPtr<FAnimNode_RetargetPoseFromMesh> Node_Retarget;
 
 	void CustomInitialize();

@@ -1,4 +1,4 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 #include "VrmConvert.h"
 
@@ -169,6 +169,9 @@ bool VRMConverter::NormalizeBoneName(const aiScene *mScenePtr) {
 	}
 
 	return true;
+
+
+	/*
 	//auto p = const_cast<aiScene*>(mScenePtr);
 	//if (p == nullptr) return false;
 
@@ -237,6 +240,7 @@ bool VRMConverter::NormalizeBoneName(const aiScene *mScenePtr) {
 
 
 	return true;
+	*/
 }
 
 
@@ -267,7 +271,7 @@ bool VRMConverter::Options::IsSkipMorphTarget() const {
 #if WITH_EDITOR
 	if (ImportOption == nullptr) return false;
 
-	return ImportOption->bSkipMorphTarget;
+	return ImportOption->bSkipMorphTarget || IsDebugNoMesh();
 #else
 	return false;
 #endif
@@ -356,6 +360,16 @@ int VRMConverter::Options::GetBoneWeightInfluenceNum() const {
 #endif
 }
 
+bool VRMConverter::Options::IsDebugIgnoreVRMValidation() const {
+	bool ret = false;
+#if WITH_EDITOR
+	if (ImportOption == nullptr) return ret;
+
+	return ImportOption->bIgnoreVRMValidation;
+#else
+	return ret;
+#endif
+}
 
 bool VRMConverter::Options::IsDebugOneBone() const {
 	bool ret = false;
@@ -363,6 +377,28 @@ bool VRMConverter::Options::IsDebugOneBone() const {
 	if (ImportOption == nullptr) return ret;
 
 	return ImportOption->bDebugOneBone;
+#else
+	return ret;
+#endif
+}
+
+bool VRMConverter::Options::IsDebugNoMesh() const {
+	bool ret = false;
+#if WITH_EDITOR
+	if (ImportOption == nullptr) return ret;
+
+	return ImportOption->bDebugNoMesh;
+#else
+	return ret;
+#endif
+}
+
+bool VRMConverter::Options::IsDebugNoMaterial() const {
+	bool ret = false;
+#if WITH_EDITOR
+	if (ImportOption == nullptr) return ret;
+
+	return ImportOption->bDebugNoMaterial;
 #else
 	return ret;
 #endif
@@ -404,6 +440,14 @@ bool VRMConverter::Options::IsSkipPhysics() const {
 	return ImportOption->bSkipPhysics;
 }
 
+bool VRMConverter::Options::IsSkipRetargeter() const {
+	bool ret = false;
+
+	if (ImportOption == nullptr) return ret;
+
+	return ImportOption->bSkipRetargeter;
+}
+
 bool VRMConverter::Options::IsForceOpaque() const {
 	if (ImportOption == nullptr) return false;
 	return ImportOption->bForceOpaque;
@@ -415,7 +459,7 @@ bool VRMConverter::Options::IsForceTwoSided() const {
 }
 
 bool VRMConverter::Options::IsSingleUAssetFile() const {
-	if (ImportOption == nullptr) return true;
+	if (ImportOption == nullptr) return false;
 
 	if (ImportOption->bUEFN) return false;
 
@@ -478,6 +522,11 @@ bool VRMConverter::Options::IsRemoveDegenerateTriangles() const {
 	return ImportOption->bRemoveDegenerateTriangles;
 }
 
+bool VRMConverter::Options::IsUE5Material() const {
+	if (ImportOption == nullptr) return false;
+	return ImportOption->bUseUE5Material;
+}
+
 static bool bbVRM0 = false;
 static bool bbVRM10 = false;
 void VRMConverter::Options::SetVRM0Model(bool bVRM) {
@@ -495,12 +544,43 @@ bool VRMConverter::Options::IsVRM0Model() const {
 bool VRMConverter::Options::IsVRM10Model() const {
 	return bbVRM10;
 }
+bool VRMConverter::Options::IsRemoveRootBoneRotation() const {
+	bool ret = true;
+#if WITH_EDITOR
+	if (ImportOption == nullptr) return ret;
+
+	return ImportOption->bRemoveRootBoneRotation;
+#else
+	return ret;
+#endif
+}
+bool VRMConverter::Options::IsRemoveRootBonePosition() const {
+	bool ret = true;
+#if WITH_EDITOR
+	if (ImportOption == nullptr) return ret;
+
+	return ImportOption->bRemoveRootBonePosition;
+#else
+	return ret;
+#endif
+}
+
 bool VRMConverter::Options::IsVRM10RemoveLocalRotation() const {
 	bool ret = true;
 #if WITH_EDITOR
 	if (ImportOption == nullptr) return ret;
 
 	return ImportOption->bVrm10RemoveLocalRotation;
+#else
+	return ret;
+#endif
+}
+
+bool VRMConverter::Options::IsVRM10BindToRestPose() const {
+	bool ret = true;
+#if WITH_EDITOR
+	if (ImportOption == nullptr) return ret;
+	return ImportOption->bVrm10UseBindToRestPose;
 #else
 	return ret;
 #endif
@@ -625,6 +705,7 @@ VrmConvert::~VrmConvert()
 }
 
 FString VRM4U_GetPackagePath(UPackage* Outer) {
+	if (Outer == nullptr) return "";
 	if (Outer != GetTransientPackage()) {
 		FString s = Outer->GetPathName();
 		FString s1, s2;
@@ -637,6 +718,7 @@ FString VRM4U_GetPackagePath(UPackage* Outer) {
 
 
 UPackage* VRM4U_CreatePackage(UPackage* Outer, FName Name) {
+	if (Outer == nullptr) return nullptr;
 	UPackage* pkg = Outer;
 	if (Outer != GetTransientPackage()) {
 		FString s = Outer->GetPathName();
@@ -653,6 +735,17 @@ UPackage* VRM4U_CreatePackage(UPackage* Outer, FName Name) {
 }
 
 
+UObject* VRM4U_StaticDuplicateObject(UObject const* SourceObject, UObject* DestOuter, const FName DestName, EObjectFlags FlagMask, UClass* DestClass, EDuplicateMode::Type DuplicateMode, EInternalObjectFlags InternalFlagsMask) {
+
+	if (VRMConverter::Options::Get().IsSingleUAssetFile() == false) {
+		DestOuter = VRM4U_CreatePackage(Cast<UPackage>(DestOuter), DestName);
+	}
+
+	return StaticDuplicateObject(SourceObject,
+		DestOuter, DestName,
+		FlagMask, DestClass, DuplicateMode, InternalFlagsMask);
+}
+
 
 
 
@@ -660,14 +753,29 @@ UPackage* VRM4U_CreatePackage(UPackage* Outer, FName Name) {
 
 template<typename T1>
 static void copyVector(VRM::vec4 &v, const T1& t) {
-	v[0] = t[0].GetFloat();
-	v[1] = t[1].GetFloat();
-	v[2] = t[2].GetFloat();
-	if (t.Size() > 3) {
-		v[3] = t[3].GetFloat();
-	} else {
-		v[3] = 1.f;
+	v[3] = 1.f;
+
+	if (t.Size() > 0) v[0] = t[0].GetFloat();
+	if (t.Size() > 1) v[1] = t[1].GetFloat();
+	if (t.Size() > 2) v[2] = t[2].GetFloat();
+	if (t.Size() > 3) v[3] = t[3].GetFloat();
+}
+
+int VRMConverter::GetThumbnailTextureIndex() const {
+
+	if (VRMConverter::Options::Get().IsVRM0Model()) {
+		return -1;
 	}
+	auto& meta = jsonData.doc["extensions"]["VRMC_vrm"]["meta"];
+	for (auto m = meta.MemberBegin(); m != meta.MemberEnd(); ++m) {
+
+		FString key = UTF8_TO_TCHAR((*m).name.GetString());
+
+		if (key == "thumbnailImage") {
+			return (*m).value.GetInt();
+		}
+	}
+	return -1;
 }
 
 bool VRMConverter::GetMatParam(VRM::VRMMaterial &m, int matNo) const {
@@ -726,6 +834,17 @@ bool VRMConverter::GetMatParam(VRM::VRMMaterial &m, int matNo) const {
 	auto& mat = jsonData.doc["materials"].GetArray()[matNo];
 
 	m.name = mat["name"].GetString();
+
+	// texture
+	{
+		if (mat["extensions"]["VRMC_materials_mtoon"]["matcapTexture"]["index"].IsInt()) {
+			m.textureProperties._SphereAdd = mat["extensions"]["VRMC_materials_mtoon"]["matcapTexture"]["index"].GetInt();
+		}
+		if (mat["extensions"]["VRMC_materials_mtoon"]["rimMultiplyTexture"]["index"].IsInt()) {
+			m.textureProperties._RimTexture = mat["extensions"]["VRMC_materials_mtoon"]["rimMultiplyTexture"]["index"].GetInt();
+		}
+
+	}
 
 	// float
 	{

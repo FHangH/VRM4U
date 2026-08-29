@@ -1,9 +1,9 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 
 #include "VrmAnimInstanceRetargetFromMannequin.h"
 
-#if	UE_VERSION_OLDER_THAN(5,3,0)
+#if	UE_VERSION_OLDER_THAN(5,2,0)
 #else
 
 #include "VrmMetaObject.h"
@@ -11,7 +11,6 @@
 #include "VrmUtil.h"
 #include "VrmBPFunctionLibrary.h"
 #include "Animation/AnimNodeBase.h"
-#include "Animation/Rig.h"
 
 //#include "BoneControllers/AnimNode_Fabrik.h"
 //#include "BoneControllers/AnimNode_TwoBoneIK.h"
@@ -19,14 +18,19 @@
 #include "AnimNode_VrmSpringBone.h"
 #include "AnimNode_VrmConstraint.h"
 #include "AnimNodes/AnimNode_RetargetPoseFromMesh.h"
-#include "Rig/Solvers/IKRigSolver.h"
+
+#include "VrmRigHeader.h"
+
+#if	UE_VERSION_OLDER_THAN(5,4,0)
+#include "Animation/Rig.h"
+#endif
 
 
 namespace {
 	template<class BaseType, class PoseType>
 	static void ConvertToLocalPoses2(const BaseType &basePose, PoseType& OutPose)
 	{
-		checkSlow(basePose.Pose.IsValid());
+		checkSlow(basePose.GetPose().IsValid());
 		OutPose = basePose.GetPose();
 
 		// now we need to convert back to local bases
@@ -141,7 +145,7 @@ bool FVrmAnimInstanceRetargetFromMannequinProxy::Evaluate(FPoseContext& Output) 
 		}
 	}
 
-#if	UE_VERSION_OLDER_THAN(5,3,0)
+#if	UE_VERSION_OLDER_THAN(5,2,0)
 #else
 
 	//retarget
@@ -187,7 +191,7 @@ bool FVrmAnimInstanceRetargetFromMannequinProxy::Evaluate(FPoseContext& Output) 
 
 				auto& constraint = *Node_Constraint.Get();
 
-				constraint.VrmMetaObject = dstMeta;
+				constraint.VrmMetaObject_Internal = FSoftObjectPath(dstMeta);
 				constraint.bCallByAnimInstance = true;
 
 				FAnimationInitializeContext InitContext(this);
@@ -238,7 +242,7 @@ bool FVrmAnimInstanceRetargetFromMannequinProxy::Evaluate(FPoseContext& Output) 
 
 				auto& springBone = *Node_SpringBone.Get();
 
-				springBone.VrmMetaObject = dstMeta;
+				springBone.VrmMetaObject_Internal = FSoftObjectPath(dstMeta);
 				springBone.bCallByAnimInstance = true;
 				springBone.CurrentDeltaTime = CurrentDeltaTime;
 

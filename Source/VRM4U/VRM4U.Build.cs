@@ -1,4 +1,4 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 using UnrealBuildTool;
 using System.IO;
@@ -45,6 +45,7 @@ public class VRM4U : ModuleRules
                 "RenderCore",
                 "AnimGraphRuntime",
 				"LiveLinkInterface",
+				"CinematicCamera",
 
                 // ... add other public dependencies that you statically link with here ...
 			}
@@ -58,20 +59,47 @@ public class VRM4U : ModuleRules
 				"SlateCore",
                 "Engine",
 				"AssetRegistry",
-				"CinematicCamera",
 				"InputCore",
+				"ControlRig",
+				"AnimationCore",
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
+
+		bool bUseMovieRenderPipeline = (Target.Platform != UnrealTargetPlatform.Android && Target.Platform != UnrealTargetPlatform.IOS);
 
 		if (Target.bBuildEditor)
 		{
 			PrivateDependencyModuleNames.Add("UnrealEd");
 			PrivateDependencyModuleNames.Add("LevelEditor");
 
-			PublicDependencyModuleNames.Add("LevelSequence");
-			PublicDependencyModuleNames.Add("LevelSequenceEditor");
-			PublicDependencyModuleNames.Add("Sequencer");
+			PrivateDependencyModuleNames.Add("LevelSequence");
+			PrivateDependencyModuleNames.Add("LevelSequenceEditor");
+			PrivateDependencyModuleNames.Add("Sequencer");
+
+			BuildVersion Version2;
+			if (BuildVersion.TryRead(BuildVersion.GetDefaultFileName(), out Version2))
+			{
+				if (Version2.MajorVersion == 5)
+				{
+					if (bUseMovieRenderPipeline)
+					{
+						PrivateDependencyModuleNames.Add("MovieRenderPipelineEditor");
+					}
+					PrivateDependencyModuleNames.Add("ControlRigDeveloper");
+
+				}
+			}
+		}
+		{
+			BuildVersion Version2;
+			if (BuildVersion.TryRead(BuildVersion.GetDefaultFileName(), out Version2))
+			{
+				if (Version2.MajorVersion == 5 && bUseMovieRenderPipeline)
+				{
+					PrivateDependencyModuleNames.Add("MovieRenderPipelineCore");
+				}
+			}
 		}
 
 		DynamicallyLoadedModuleNames.AddRange(
@@ -86,13 +114,14 @@ public class VRM4U : ModuleRules
 			//if (Version.MajorVersion == X && Version.MinorVersion == Y)
 			if (Version.MajorVersion == 5)
 			{
+				PrivateDependencyModuleNames.Add("RigVM");
 				PrivateDependencyModuleNames.Add("IKRig");
 				if (Target.bBuildEditor)
 				{
 					PrivateDependencyModuleNames.Add("IKRigEditor");
 				}
 
-				PublicDependencyModuleNames.Add("InterchangeCore");
+				PrivateDependencyModuleNames.Add("InterchangeCore");
 			}
 		}
 

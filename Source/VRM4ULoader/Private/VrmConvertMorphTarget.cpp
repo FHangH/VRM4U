@@ -1,4 +1,4 @@
-// VRM4U Copyright (c) 2021-2023 Haruyoshi Yamamoto. This software is released under the MIT License.
+﻿// VRM4U Copyright (c) 2021-2026 Haruyoshi Yamamoto. This software is released under the MIT License.
 
 #include "VrmConvertMorphTarget.h"
 #include "VrmConvert.h"
@@ -19,6 +19,17 @@
 #include "PhysicsEngine/PhysicsConstraintTemplate.h"
 
 #include "Async/ParallelFor.h"
+
+#if WITH_EDITOR
+
+#if UE_VERSION_OLDER_THAN(5,8,0)
+#else
+#include "MeshDescription.h"
+#include "MeshAttributes.h"
+#include "SkeletalMeshAttributes.h"
+#endif // 5.8
+
+#endif // editor
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -182,29 +193,53 @@ static bool readMorph2(TArray<FMorphTargetDelta> &MorphDeltas, aiString targetNa
 				++VertexCount;
 
 				if (aiA.mVertices) {
+
+					auto aiV = aiA.mVertices[i] - aiM.mVertices[i];
+
 					v.PositionDelta.Set(
-						-aiA.mVertices[i][0] * 100.f,
-						aiA.mVertices[i][2] * 100.f,
-						aiA.mVertices[i][1] * 100.f
+						-aiV[0] * 100.f,
+						aiV[2] * 100.f,
+						aiV[1] * 100.f
 					);
+
+					if (VRMConverter::Options::Get().IsVRM10Model()) {
+						v.PositionDelta.Set(
+							aiV[0] * 100.f,
+							-aiV[2] * 100.f,
+							aiV[1] * 100.f
+						);
+					}
+
+					// apply original root bone rotation
+					FVector tmp;
+					tmp.Set(v.PositionDelta.X, v.PositionDelta.Y, v.PositionDelta.Z);
+					tmp = assetList->model_root_transform.TransformVector(tmp);
+					v.PositionDelta.Set(tmp.X, tmp.Y, tmp.Z);
 				}
 
 				v.PositionDelta *= VRMConverter::Options::Get().GetModelScale();
 
-				if (VRMConverter::Options::Get().IsVRM10Model()) {
-					v.PositionDelta.X *= -1.f;
-					v.PositionDelta.Y *= -1.f;
-				}
 
 				if (bIncludeNormal) {
+
+					auto aiV = aiA.mNormals[i] - aiM.mNormals[i];
+
 #if	UE_VERSION_OLDER_THAN(5,0,0)
-					const FVector n(
+					FVector n(
 #else
-					const FVector3f n(
+					FVector3f n(
 #endif
-						-aiA.mNormals[i][0],
-						aiA.mNormals[i][2],
-						aiA.mNormals[i][1]);
+						-aiV[0],
+						aiV[2],
+						aiV[1]);
+
+					if (VRMConverter::Options::Get().IsVRM10Model()) {
+						n.Set(
+							aiV[0],
+							-aiV[2],
+							aiV[1]);
+					}
+
 					if (n.Size() > 1.f) {
 						v.TangentZDelta = n.GetUnsafeNormal();
 					}
@@ -254,7 +289,10 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 
 	TArray<FString> MorphNameList;
 	TArray<FString> MorphNameList_Strict;
+	TMap<FString, FString> MorphName_Orig_to_Name;
+
 	TArray<UMorphTarget*> MorphTargetList;
+	TMap<FString, UMorphTarget*> MorphNameToTargetMap; // UE5.8用: 名前とターゲットのマッピング
 
 	for (uint32_t m = 0; m < aiData->mNumMeshes; ++m) {
 		const aiMesh &aiM = *(aiData->mMeshes[m]);
@@ -267,24 +305,28 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 			FString morphNameOrg = morphName;
 			if (VRMConverter::Options::Get().IsForceOriginalMorphTargetName()) {
 			}else{
-				morphName = VRMUtil::MakeName(morphName);
-				//morphName = VRMConverter::NormalizeFileName(morphName);
 
-				if (morphName != morphNameOrg) {
-					if (MorphNameList_Strict.Find(morphNameOrg) == INDEX_NONE) {
+				auto mName = MorphName_Orig_to_Name.Find(morphNameOrg);
+				if (mName) {
+					continue;
+					//morphName = *mName;
+				} else {
+					morphName = VRMUtil::MakeName(morphName);
 
-						auto tmp = morphName;
-						int i = 0;
-						if (VRMUtil::IsNoSafeName(morphName)) {
-							tmp = TEXT("UE5EA_patch_") + morphName + TEXT("_") + FString::FromInt(i);
-						}
-						while (MorphNameList.Find(tmp) != INDEX_NONE) {
-							++i;
-							tmp = TEXT("UE5EA_patch_") + morphName + TEXT("_") + FString::FromInt(i);
-						}
-						morphName = tmp;
+					bool isInvalidName = VRMUtil::IsNoSafeName(morphName);
+
+					auto tmp = morphName;
+					int i = 0;
+					while (MorphNameList.Find(tmp) != INDEX_NONE || isInvalidName) {
+						++i;
+						isInvalidName = false;
+						tmp = TEXT("UE5EA_patch_") + morphName + TEXT("_") + FString::FromInt(i);
 					}
+					morphName = tmp;
+
+					MorphName_Orig_to_Name.Add(morphNameOrg, morphName);
 				}
+
 			}
 			if (morphName == TEXT("")) {
 				//morphName = FString::Printf("%d_%d", m, a);
@@ -292,11 +334,11 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 
 
 			if (MorphNameList.Find(morphName) != INDEX_NONE) {
-				continue;
+//				continue;
 			}
 
-			MorphNameList.Add(morphName);
-			MorphNameList_Strict.Add(morphNameOrg);
+			MorphNameList.AddUnique(morphName);
+			MorphNameList_Strict.AddUnique(morphNameOrg);
 			if (readMorph2(MorphDeltas, aiA.mName, aiData, vrmAssetList) == false) {
 				continue;
 			}
@@ -320,17 +362,27 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 					MorphLODModel.NumBaseMeshVerts = MorphDeltas.Num();
 					MorphLODModel.SectionIndices.Add(0);
 					MorphLODModel.Vertices = MorphDeltas;
+					MorphLODModel.NumVertices = MorphDeltas.Num();
 
 #if	UE_VERSION_OLDER_THAN(5,0,0)
-					mt->MorphLODModels.Add(MorphLODModel);
+					if (mt->MorphLODModels.IsValidIndex(0) == false) {
+						mt->MorphLODModels.Add(MorphLODModel);
+					} else {
+						mt->MorphLODModels[0] = MorphLODModel;
+					}
 #else
-					mt->GetMorphLODModels().Add(MorphLODModel);
+					if (mt->GetMorphLODModels().IsValidIndex(0) == false) {
+						mt->GetMorphLODModels().Add(MorphLODModel);
+					} else {
+						mt->GetMorphLODModels()[0] = MorphLODModel;
+					}
 #endif
 
 					mt->BaseSkelMesh = sk;
 				}
 #endif
 				MorphTargetList.Add(mt);
+				MorphNameToTargetMap.Add(morphName, mt); // UE5.8用: マッピングを追加
 			}
 		}
 	}
@@ -338,7 +390,9 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 #if WITH_EDITOR
 
 #if	UE_VERSION_OLDER_THAN(4,25,0)
-#else
+
+#elif UE_VERSION_OLDER_THAN(5,8,0)
+
 	// to avoid no morph target
 	// on Immediate
 	VRMSetUseLegacyMeshDerivedDataKey(sk, true);
@@ -348,14 +402,174 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 
 	RawMesh.MorphTargetNames = MorphNameList;
 
-	// to avoid no morph target
-	// on EditorRestart
-	sk->SaveLODImportedData(0, RawMesh);
 
+
+	sk->SaveLODImportedData(0, RawMesh);
 	sk->SetLODImportedDataVersions(0, ESkeletalMeshGeoImportVersions::Before_Versionning, ESkeletalMeshSkinningImportVersions::Before_Versionning);
+#else
+	// UE5.8以降: MeshDescriptionに直接モーフターゲットを登録
+	FMeshDescription* MeshDescription = sk->GetMeshDescription(0);
+
+	// MeshDescriptionがnullの場合は、LODImportedDataから作成
+	if (!MeshDescription)
+	{
+		FSkeletalMeshImportData RawMesh;
+		sk->LoadLODImportedData(0, RawMesh);
+
+		// ImportedDataからMeshDescriptionを作成
+		FMeshDescription TempMeshDescription;
+		FSkeletalMeshAttributes MeshAttributes(TempMeshDescription);
+		MeshAttributes.Register();
+
+		// 頂点位置の追加
+		TVertexAttributesRef<FVector3f> VertexPositions = MeshAttributes.GetVertexPositions();
+		for (int32 i = 0; i < RawMesh.Points.Num(); ++i)
+		{
+			FVertexID VertexID = TempMeshDescription.CreateVertex();
+			VertexPositions[VertexID] = FVector3f(RawMesh.Points[i]);
+		}
+
+		// 面とウェッジの追加
+		TMap<int32, FPolygonGroupID> MaterialIndexToPolygonGroupID;
+		for (int32 FaceIndex = 0; FaceIndex < RawMesh.Faces.Num(); ++FaceIndex)
+		{
+			const SkeletalMeshImportData::FTriangle& Face = RawMesh.Faces[FaceIndex];
+
+			// ポリゴングループの取得または作成
+			FPolygonGroupID PolygonGroupID;
+			if (!MaterialIndexToPolygonGroupID.Contains(Face.MatIndex))
+			{
+				PolygonGroupID = TempMeshDescription.CreatePolygonGroup();
+				MaterialIndexToPolygonGroupID.Add(Face.MatIndex, PolygonGroupID);
+			}
+			else
+			{
+				PolygonGroupID = MaterialIndexToPolygonGroupID[Face.MatIndex];
+			}
+
+			// 三角形の頂点インデックス
+			TArray<FVertexInstanceID> VertexInstanceIDs;
+			VertexInstanceIDs.SetNum(3);
+
+			for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
+			{
+				int32 WedgeIndex = FaceIndex * 3 + CornerIndex;
+				const SkeletalMeshImportData::FVertex& Wedge = RawMesh.Wedges[Face.WedgeIndex[CornerIndex]];
+
+				FVertexInstanceID VertexInstanceID = TempMeshDescription.CreateVertexInstance(FVertexID(Wedge.VertexIndex));
+				VertexInstanceIDs[CornerIndex] = VertexInstanceID;
+
+				// UVの設定
+				TVertexInstanceAttributesRef<FVector2f> UVs = MeshAttributes.GetVertexInstanceUVs();
+				UVs.Set(VertexInstanceID, 0, FVector2f(Wedge.UVs[0]));
+
+				// 法線の設定
+				TVertexInstanceAttributesRef<FVector3f> Normals = MeshAttributes.GetVertexInstanceNormals();
+				Normals[VertexInstanceID] = FVector3f(Face.TangentZ[CornerIndex]);
+
+				// 接線の設定
+				TVertexInstanceAttributesRef<FVector3f> Tangents = MeshAttributes.GetVertexInstanceTangents();
+				Tangents[VertexInstanceID] = FVector3f(Face.TangentX[CornerIndex]);
+
+				// バイノーマルの設定
+				TVertexInstanceAttributesRef<float> BinormalSigns = MeshAttributes.GetVertexInstanceBinormalSigns();
+				BinormalSigns[VertexInstanceID] = GetBasisDeterminantSign(
+					FVector(Face.TangentX[CornerIndex].GetSafeNormal()), 
+					FVector(Face.TangentY[CornerIndex].GetSafeNormal()), 
+					FVector(Face.TangentZ[CornerIndex].GetSafeNormal())
+				);
+			}
+
+			// ポリゴンの作成
+			TempMeshDescription.CreatePolygon(PolygonGroupID, VertexInstanceIDs);
+		}
+
+		// スキニング情報の追加
+		// UE5.8ではスキニング情報はVertexに紐付く
+		FSkinWeightsVertexAttributesRef VertexSkinWeights = MeshAttributes.GetVertexSkinWeights();
+
+		// インフルエンスをVertexIDごとにグループ化
+		TMap<int32, TArray<SkeletalMeshImportData::FRawBoneInfluence>> VertexInfluences;
+		for (const SkeletalMeshImportData::FRawBoneInfluence& Influence : RawMesh.Influences)
+		{
+			VertexInfluences.FindOrAdd(Influence.VertexIndex).Add(Influence);
+		}
+
+		// 各頂点のスキニング情報を設定
+		for (const auto& Pair : VertexInfluences)
+		{
+			FVertexID VertexID(Pair.Key);
+			if (TempMeshDescription.IsVertexValid(VertexID))
+			{
+				const TArray<SkeletalMeshImportData::FRawBoneInfluence>& Influences = Pair.Value;
+
+				// インフルエンスをウェイトでソート（降順）
+				TArray<SkeletalMeshImportData::FRawBoneInfluence> SortedInfluences = Influences;
+				SortedInfluences.Sort([](const SkeletalMeshImportData::FRawBoneInfluence& A, const SkeletalMeshImportData::FRawBoneInfluence& B) {
+					return A.Weight > B.Weight;
+				});
+
+				// 最大4つのインフルエンスを設定
+				TArray<UE::AnimationCore::FBoneWeight> BoneWeightArray;
+				for (int32 i = 0; i < FMath::Min(SortedInfluences.Num(), 4); ++i)
+				{
+					BoneWeightArray.Add(UE::AnimationCore::FBoneWeight(SortedInfluences[i].BoneIndex, SortedInfluences[i].Weight));
+				}
+				VertexSkinWeights.Set(VertexID, TArrayView<const UE::AnimationCore::FBoneWeight>(BoneWeightArray));
+			}
+		}
+
+		// 基本メッシュデータをMeshDescriptionに変換
+		sk->CreateMeshDescription(0, MoveTemp(TempMeshDescription));
+		sk->CommitMeshDescription(0);
+
+		// 再度取得
+		MeshDescription = sk->GetMeshDescription(0);
+	}
+
+	if (MeshDescription)
+	{
+		FSkeletalMeshAttributes MeshAttributes(*MeshDescription);
+		MeshAttributes.Register();
+
+		// 各モーフターゲットをMeshDescriptionに登録
+		for (const FString& MorphName : MorphNameList)
+		{
+			UMorphTarget** mtPtr = MorphNameToTargetMap.Find(MorphName);
+			if (!mtPtr || !(*mtPtr))
+			{
+				continue;
+			}
+
+			UMorphTarget* mt = *mtPtr;
+
+			// モーフターゲット属性を登録（法線なし）
+			if (MeshAttributes.RegisterMorphTargetAttribute(*MorphName, false))
+			{
+				TVertexAttributesRef<FVector3f> PositionDelta = MeshAttributes.GetVertexMorphPositionDelta(*MorphName);
+
+				// モーフターゲットのデルタデータを取得
+				const FMorphTargetLODModel& MorphLODModel = mt->GetMorphLODModels()[0];
+
+				// 各頂点のデルタをMeshDescriptionに設定
+				for (const FMorphTargetDelta& Delta : MorphLODModel.Vertices)
+				{
+					// SourceIdxからVertexIDを取得
+					FVertexID VertexID(Delta.SourceIdx);
+					if (MeshDescription->IsVertexValid(VertexID))
+					{
+						PositionDelta.Set(VertexID, Delta.PositionDelta);
+					}
+				}
+			}
+		}
+
+		sk->CommitMeshDescription(0);
+	}
 
 #endif
 #endif // editor
+
 #if	UE_VERSION_OLDER_THAN(5,0,0)
 #else
 	{
@@ -388,6 +602,7 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 #endif
 	}
 
+#if	UE_VERSION_OLDER_THAN(5,8,0)
 	for (int i=0; i<MorphTargetList.Num(); ++i){
 		auto *mt = MorphTargetList[i];
 		if (i == MorphTargetList.Num() - 1) {
@@ -396,6 +611,19 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 			VRMGetMorphTargets(sk).Add(mt);
 		}
 	}
+
+#else
+
+	// UE5.8: Register all morph targets using RegisterMorphTarget
+	for (int i=0; i<MorphTargetList.Num(); ++i){
+		auto *mt = MorphTargetList[i];
+		sk->RegisterMorphTarget(mt, false);
+	}
+	sk->InitMorphTargets(true);
+	sk->SetMorphTargets(MorphTargetList);
+
+	//MorphLODModelsPerTargetName
+#endif
 
 	for (auto name : MorphNameList) {
 		FCurveMetaData* FoundCurveMetaData = VRMGetSkeleton(sk)->GetCurveMetaData(*name);
@@ -408,7 +636,13 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 	}
 
 #if WITH_EDITOR
+#if UE_VERSION_OLDER_THAN(5,8,0)
 	sk->PostEditChange();
+#else
+	// UE5.8: Force rebuild of skeletal mesh before PostEditChange
+	sk->Build();
+	sk->PostEditChange();
+#endif
 #else
 
 #if	UE_VERSION_OLDER_THAN(4,24,0)
@@ -424,7 +658,23 @@ bool VRMConverter::ConvertMorphTarget(UVrmAssetListObject *vrmAssetList) {
 				}
 			}
 #endif
+
+#if	UE_VERSION_OLDER_THAN(5,4,0)
 			sk->GetResourceForRendering()->LODRenderData[0].InitResources(false, 0, VRMGetMorphTargets(sk), sk);
+#else
+			{
+				TArray<UMorphTarget*> morphtargets;
+				for (auto morphtarget : VRMGetMorphTargets(sk)) {
+					morphtargets.Add(morphtarget);
+				}
+#if UE_VERSION_OLDER_THAN(5,7,0)
+			sk->GetResourceForRendering()->LODRenderData[0].InitResources(false, 0, morphtargets, sk);
+#else
+			sk->GetResourceForRendering()->LODRenderData[0].InitResources(false, 0, sk);
+#endif
+
+			}
+#endif
 		}
 	}
 #endif
